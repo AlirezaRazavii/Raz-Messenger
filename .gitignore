@@ -179,3 +179,23 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# --- Python / Django ---
+backend/.venv/
+__pycache__/
+*.py[cod]
+backend/wheels/
+backend/staticfiles/
+backend/media/
+
+# --- Node / React ---
+frontend/node_modules/
+
+# --- بکاپ‌ها ---
+*.tar
+
+# --- سیستم‌عامل / ادیتور ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
