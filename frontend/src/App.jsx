@@ -1,19 +1,25 @@
-import moment from 'moment-jalaali'
-import { CheckCircle2 } from 'lucide-react'
+import { Navigate, Route, Routes } from 'react-router-dom'
+
+import ProtectedLayout from './components/ProtectedLayout'
+import ForgotPasswordPage from './pages/ForgotPasswordPage'
+import HomePage from './pages/HomePage'
+import LoginPage from './pages/LoginPage'
+import RegisterPage from './pages/RegisterPage'
+import ResetPasswordPage from './pages/ResetPasswordPage'
+import SettingsPage from './pages/SettingsPage'
 
 export default function App() {
-  const today = moment().format('jYYYY/jMM/jDD')
-
   return (
-    <div dir="rtl" className="min-h-screen bg-slate-100 flex items-center justify-center p-4">
-      <div className="bg-white rounded-2xl shadow-xl p-8 max-w-md w-full text-center">
-        <CheckCircle2 className="w-14 h-14 text-emerald-500 mx-auto" />
-        <h1 className="text-2xl font-bold text-slate-800 mt-4">محیط توسعه آماده است</h1>
-        <p className="mt-3 text-slate-500 leading-7">
-          فاز صفر کامل شد؛ پستگرس و ردیس فعال هستند و این صفحه با ریکت، تیلویند و فونت وزیرمتن رندر شده است.
-        </p>
-        <p className="mt-4 text-sm text-slate-400">امروز: {today}</p>
-      </div>
-    </div>
+    <Routes>
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/register" element={<RegisterPage />} />
+      <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
+      <Route element={<ProtectedLayout />}>
+        <Route path="/" element={<HomePage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+      </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }
