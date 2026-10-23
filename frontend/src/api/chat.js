@@ -36,8 +36,14 @@ export async function apiListMessages(conversationId, { before, limit } = {}) {
 }
 
 
-export async function apiSendMessage(conversationId, text) {
-  return unwrap(api.post(`/chat/conversations/${conversationId}/messages/`, { text }));
+export async function apiSendMessage(conversationId, text, replyToId = null) {
+  const body = { text };
+  if (replyToId) body.reply_to = replyToId;
+  return unwrap(api.post(`/chat/conversations/${conversationId}/messages/`, body));
+}
+
+export async function apiForwardMessage(messageId, conversationId) {
+  return unwrap(api.post(`/chat/messages/${messageId}/forward/`, { conversation_id: conversationId }));
 }
 
 export async function apiEditMessage(messageId, text) {

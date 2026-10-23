@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowRight, Check, CheckCheck, Loader2, MoreHorizontal, Pencil, SendHorizonal, Trash2, X,
+  ArrowRight, Check, CheckCheck, Copy, Forward, Loader2, MoreHorizontal, Pencil,
+  Reply, SendHorizonal, Trash2, X,
 } from "lucide-react";
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
@@ -61,6 +62,72 @@ function lastSeenText(iso) {
   }
 }
 
+function ForwardDialog({ message, onClose }) {
+  const conversations = useChatStore((s) => s.conversations);
+  const forwardMessage = useChatStore((s) => s.forwardMessage);
+  const [busyId, setBusyId] = useState(null);
+  const [error, setError] = useState("");
+
+  const pick = async (conv) => {
+    if (busyId != null) return;
+    setBusyId(conv.id);
+    setError("");
+    try {
+      await forwardMessage(message.id, conv.id);
+      onClose();
+    } catch (e) {
+      setError(extractError ? extractError(e) : "خطا در فوروارد پیام");
+      setBusyId(null);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+          <div className="flex items-center gap-2 font-bold text-slate-800">
+            <Forward className="h-5 w-5 text-emerald-600" />
+            فوروارد پیام
+          </div>
+          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="border-b border-slate-100 bg-slate-50 px-4 py-2">
+          <div className="truncate text-xs text-slate-500" title={message?.text}>{message?.text}</div>
+        </div>
+
+        <div className="p-2">
+          {error && <div className="m-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
+          {conversations.length === 0 && (
+            <div className="py-6 text-center text-sm text-slate-400">گفتگوی دیگری وجود ندارد</div>
+          )}
+          <div className="max-h-72 overflow-y-auto">
+            {conversations.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => pick(c)}
+                disabled={busyId != null}
+                className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-right hover:bg-slate-50 disabled:opacity-50"
+              >
+                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-600">
+                  {initial(c.other_user?.username)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-slate-700">{c.other_user?.username}</div>
+                  <div className="truncate text-xs text-slate-400">{c.last_message?.text ?? "بدون پیام"}</div>
+                </div>
+                {busyId === c.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-emerald-600" />}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function ChatWindow() {
   const activeId = useChatStore((s) => s.activeId);
   const conv = useChatStore((s) => s.conversations.find((c) => c.id === s.activeId) ?? null);
@@ -83,6 +150,8 @@ export default function ChatWindow() {
   const [editing, setEditing] = useState(null);
   const [editText, setEditText] = useState("");
   const [savingEdit, setSavingEdit] = useState(false);
+  const [replyTo, setReplyTo] = useState(null);
+  const [forwarding, setForwarding] = useState(null);
   const [, setTick] = useState(0);
 
   const scrollRef = useRef(null);
@@ -109,6 +178,8 @@ export default function ChatWindow() {
     restoreRef.current = null;
     setEditing(null);
     setMenuFor(null);
+    setReplyTo(null);
+    setForwarding(null);
     setError("");
   }, [activeId]);
 
@@ -158,6 +229,34 @@ export default function ChatWindow() {
     }
   };
 
+  const doCopy = async (m) => {
+    setMenuFor(null);
+    try {
+      await navigator.clipboard.writeText(m.text ?? "");
+    } catch {
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = m.text ?? "";
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+      } catch {}
+    }
+  };
+
+  const startReply = (m) => {
+    setMenuFor(null);
+    setReplyTo(m);
+  };
+
+  const startForward = (m) => {
+    setMenuFor(null);
+    setForwarding(m);
+  };
+
   const doSend = async () => {
     const t = text.trim();
     if (!t || sending) return;
@@ -166,7 +265,8 @@ export default function ChatWindow() {
     try {
       setText("");
       stopTypingSignal();
-      await sendMessage(activeId, t);
+      await sendMessage(activeId, t, replyTo?.id ?? null);
+      setReplyTo(null);
     } catch (e) {
       setError(extractError ? extractError(e) : "خطا در ارسال پیام");
       setText(t);
@@ -263,6 +363,19 @@ export default function ChatWindow() {
             </div>
           ) : (
             <>
+              {m.reply_to && (
+                <div
+                  className={`mb-1.5 truncate rounded-lg border-r-2 px-2 py-1 text-[11px] leading-5 ${
+                    mine
+                      ? "border-emerald-200 bg-emerald-500/25 text-emerald-50"
+                      : "border-emerald-500 bg-emerald-50 text-slate-600"
+                  }`}
+                  title={m.reply_to.text}
+                >
+                  <span className="font-bold">{m.reply_to.sender_username ?? "کاربر"}: </span>
+                  {m.reply_to.text}
+                </div>
+              )}
               <p className="whitespace-pre-wrap break-words text-sm leading-6">{m.text}</p>
               <div className={`mt-1 flex items-center gap-1.5 text-[10px] ${mine ? "text-emerald-100" : "text-slate-400"}`}>
                 {isEdited && <span>ویرایش‌شده</span>}
@@ -280,7 +393,7 @@ export default function ChatWindow() {
           )}
         </div>
 
-        {mine && !isEditing && (
+        {!isEditing && (
           <div className="relative shrink-0 pb-2">
             <button
               onClick={(e) => {
@@ -295,17 +408,39 @@ export default function ChatWindow() {
             {menuFor === m.id && (
               <div className="absolute bottom-full left-0 z-20 mb-1 w-36 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
                 <button
-                  onClick={() => startEdit(m)}
+                  onClick={() => doCopy(m)}
                   className="flex w-full items-center gap-2 px-3 py-2 text-right text-sm text-slate-700 hover:bg-slate-50"
                 >
-                  <Pencil className="h-4 w-4" /> ویرایش
+                  <Copy className="h-4 w-4" /> کپی متن
                 </button>
                 <button
-                  onClick={() => doDelete(m)}
-                  className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-red-600 hover:bg-red-50"
+                  onClick={() => startReply(m)}
+                  className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-slate-700 hover:bg-slate-50"
                 >
-                  <Trash2 className="h-4 w-4" /> حذف
+                  <Reply className="h-4 w-4" /> پاسخ
                 </button>
+                <button
+                  onClick={() => startForward(m)}
+                  className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-slate-700 hover:bg-slate-50"
+                >
+                  <Forward className="h-4 w-4" /> فوروارد
+                </button>
+                {mine && (
+                  <>
+                    <button
+                      onClick={() => startEdit(m)}
+                      className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-slate-700 hover:bg-slate-50"
+                    >
+                      <Pencil className="h-4 w-4" /> ویرایش
+                    </button>
+                    <button
+                      onClick={() => doDelete(m)}
+                      className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-red-600 hover:bg-red-50"
+                    >
+                      <Trash2 className="h-4 w-4" /> حذف
+                    </button>
+                  </>
+                )}
               </div>
             )}
           </div>
@@ -396,6 +531,25 @@ export default function ChatWindow() {
       {/* جعبه نوشتن */}
       <div className="shrink-0 border-t border-slate-200 bg-white p-3">
         {error && <div className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
+
+        {replyTo && (
+          <div className="mx-auto mb-2 flex max-w-3xl items-start gap-2 rounded-xl border-r-2 border-emerald-500 bg-emerald-50 px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <div className="text-xs font-bold text-emerald-700">
+                پاسخ به {replyTo.sender?.username ?? "کاربر"}
+              </div>
+              <div className="truncate text-xs text-slate-500">{replyTo.text}</div>
+            </div>
+            <button
+              onClick={() => setReplyTo(null)}
+              className="grid h-6 w-6 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-200"
+              title="لغو پاسخ"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
         <div className="mx-auto flex max-w-3xl items-end gap-2">
           <textarea
             rows={1}
@@ -416,6 +570,8 @@ export default function ChatWindow() {
           </button>
         </div>
       </div>
+
+      {forwarding && <ForwardDialog message={forwarding} onClose={() => setForwarding(null)} />}
     </div>
   );
 }

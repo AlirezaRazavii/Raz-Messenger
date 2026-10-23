@@ -5,6 +5,7 @@ import {
   apiCreateConversation,
   apiListMessages,
   apiSendMessage,
+  apiForwardMessage,
   apiEditMessage,
   apiDeleteMessage,
   apiSearchUsers,
@@ -297,8 +298,8 @@ const useChatStore = create((set, get) => ({
     }
   },
 
-  sendMessage: async (convId, text) => {
-    const m = await apiSendMessage(convId, text);
+  sendMessage: async (convId, text, replyToId = null) => {
+    const m = await apiSendMessage(convId, text, replyToId);
     if (m?.id) {
       set((s) => {
         const messages = { ...s.messages };
@@ -316,6 +317,30 @@ const useChatStore = create((set, get) => ({
         return { messages, conversations };
       });
       get().sendTyping(convId, false);
+    }
+    return m;
+  },
+
+  forwardMessage: async (messageId, targetConvId) => {
+    const m = await apiForwardMessage(messageId, targetConvId);
+    if (m?.id) {
+      // اگر گفتگوی مقصد قبلاً لود شده، همان‌جا هم اضافه می‌کنیم؛
+      // پوش WS هم می‌رسد ولی فقط گفتگوی فعال را لمس می‌کند — اینجا مقصد را دقیق به‌روز می‌کنیم
+      set((s) => {
+        const messages = { ...s.messages };
+        const b = messages[targetConvId] ?? { list: [], hasMore: false, loading: false };
+        if (!b.list.some((x) => x.id === m.id)) {
+          messages[targetConvId] = { ...b, list: [...b.list, m] };
+        }
+        const conversations = [...s.conversations];
+        const idx = conversations.findIndex((c) => c.id === targetConvId);
+        if (idx >= 0) {
+          const c = { ...conversations[idx], last_message: m };
+          conversations.splice(idx, 1);
+          conversations.unshift(c);
+        }
+        return { messages, conversations };
+      });
     }
     return m;
   },
