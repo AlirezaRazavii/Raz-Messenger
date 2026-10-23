@@ -43,16 +43,24 @@ def _get_async_redis():
 # ---------- سمت WebSocket (async) ----------
 
 async def mark_online(user_id):
-    """ثبت اتصال جدید؛ فقط اگر اولین اتصالِ باز باشد True برمی‌گرداند (برای اعلام آنلاین)."""
+    """ثبت اتصال جدید؛ فقط در گذار آفلاین→آنلاین True برمی‌گرداند (برای اعلام).
+
+    نکته: کلید آنلاین «همیشه» ست می‌شود، نه فقط در اولین اتصال. اگر runserver
+    با تب‌های باز ری‌استارت شود، شمارنده اتصال‌ها کهنه می‌ماند (مثلاً ۲) و بدون
+    این ستِ همیشگی، کلید آنلاین دیگر هرگز ساخته نمی‌شد و کاربرِ متصل تا ابد
+    آفلاین دیده می‌شد.
+    """
     r = _get_async_redis()
     conns_key = CONNS_KEY.format(user_id=user_id)
+    online_key = ONLINE_KEY.format(user_id=user_id)
     count = await r.incr(conns_key)
     await r.expire(conns_key, ONLINE_TTL)
-    if count == 1:
-        await r.setex(ONLINE_KEY.format(user_id=user_id), ONLINE_TTL, "1")
-        await r.set(SEEN_KEY.format(user_id=user_id), time.time(), ex=LAST_SEEN_TTL)
-        return True
-    return False
+    was_online = await r.exists(online_key)
+    await r.setex(online_key, ONLINE_TTL, "1")
+    await r.set(SEEN_KEY.format(user_id=user_id), time.time(), ex=LAST_SEEN_TTL)
+    # اعلام وقتی اولین اتصال است، یا وقتی کلید آنلاین از بین رفته بود
+    # (احیای خودکار پس از وضعیت ناسازگار — مثلاً ری‌استارت dev)
+    return count == 1 or not was_online
 
 
 async def mark_offline(user_id):
@@ -70,9 +78,14 @@ async def mark_offline(user_id):
 
 
 async def touch(user_id):
-    """تمدید مهلت کلیدها — با هر ping (هر ۳۰ ثانیه) صدا زده می‌شود."""
+    """تمدید مهلت کلیدها — با هر ping (هر ۳۰ ثانیه) صدا زده می‌شود.
+
+    برای کلید آنلاین از setex استفاده می‌کنیم نه expire: چون expire روی کلیدِ
+    ناپدید اثری ندارد و اگر کلید بین‌راهی حذف شده باشد، کاربرِ متصل تا ابد
+    آفلاین می‌ماند. setex در صورت نبود کلید می‌سازد و در صورت بود فقط تمدید می‌کند.
+    """
     r = _get_async_redis()
-    await r.expire(ONLINE_KEY.format(user_id=user_id), ONLINE_TTL)
+    await r.setex(ONLINE_KEY.format(user_id=user_id), ONLINE_TTL, "1")
     await r.expire(CONNS_KEY.format(user_id=user_id), ONLINE_TTL)
 
 

@@ -1,14 +1,10 @@
 import { useEffect } from "react";
-import * as authModule from "../store/auth";
+import { useAuthStore } from "../store/auth";
 import useChatStore from "../store/chat";
 
-const useAuthStore =
-  authModule.default ??
-  authModule.useAuthStore ??
-  authModule.useAuth ??
-  authModule.authStore;
-
 const WS_URL = "ws://127.0.0.1:8000/ws/";
+// در فاز ۷ (استقرار) این آدرس‌ها به متغیر محیطی منتقل می‌شوند
+const API_BASE = "http://127.0.0.1:8000";
 const PING_INTERVAL = 30000;
 const MAX_BACKOFF = 15000;
 
@@ -30,6 +26,31 @@ function getAccessToken() {
     if (raw) return pickToken(JSON.parse(raw)?.state);
   } catch {}
   return null;
+}
+
+// وقتی سرور با کد 4001 اتصال را می‌بندد یعنی توکن دسترسی منقضی شده؛
+// با refresh، توکن تازه می‌گیریم و دوباره وصل می‌شویم.
+async function tryRefresh() {
+  const st = useAuthStore.getState() || {};
+  const refreshToken = st.refresh ?? null;
+  if (!refreshToken) return null;
+  try {
+    const res = await fetch(`${API_BASE}/api/auth/refresh/`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ refresh: refreshToken }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    const access = data?.access ?? data?.accessToken ?? null;
+    if (!access) return null;
+    if (typeof st.setTokens === "function") {
+      st.setTokens(access, data?.refresh ?? refreshToken);
+    }
+    return access;
+  } catch {
+    return null;
+  }
 }
 
 export default function useChatSocket() {
@@ -79,11 +100,27 @@ export default function useChatSocket() {
         useChatStore.getState().handleSocketEvent(data);
       };
 
-      ws.onclose = () => {
+      ws.onclose = (ev) => {
         if (pingTimer) clearInterval(pingTimer);
         pingTimer = null;
+        // سوکتِ دورریختهٔ قبلی (ری‌ماونت StrictMode در dev) نباید وضعیتِ سوکتِ زنده را خراب کند؛
+        // پاک‌سازی وضعیت در cleanup خود effect انجام می‌شود
+        if (closedByUs) return;
         useChatStore.getState().setConnected(false);
-        if (!closedByUs) scheduleReconnect();
+        if (ev && ev.code === 4001) {
+          // توکن منقضی شده — اول refresh بعد اتصال مجدد
+          retry += 1;
+          if (retry > 5) {
+            scheduleReconnect(); // با فاصله بیشتر ادامه بده — شاید بعداً درست شود
+            return;
+          }
+          reconnectTimer = setTimeout(async () => {
+            await tryRefresh();
+            connect();
+          }, 500);
+          return;
+        }
+        scheduleReconnect();
       };
 
       ws.onerror = () => {

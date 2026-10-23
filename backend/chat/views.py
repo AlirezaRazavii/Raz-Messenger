@@ -39,6 +39,11 @@ def _annotated_conversations(user):
                 "last_read_message_id"
             )[:1]
         ),
+        other_last_read_id=Subquery(
+            Participant.objects.filter(conversation=OuterRef("pk"))
+            .exclude(user=user)
+            .values("last_read_message_id")[:1]
+        ),
         last_message_id=Subquery(
             Message.objects.filter(conversation=OuterRef("pk"))
             .order_by("-id")
@@ -106,6 +111,7 @@ def _serialize_conversations(user, conversations):
                     else None
                 ),
                 "unread_count": unread,
+                "other_last_read_id": c.other_last_read_id or 0,
                 "updated_at": c.updated_at,
             }
         )

@@ -1,13 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Plus, Search, UserPlus, X } from "lucide-react";
 import useChatStore from "../../store/chat";
-import * as authModule from "../../store/auth";
-
-const useAuthStore =
-  authModule.default ??
-  authModule.useAuthStore ??
-  authModule.useAuth ??
-  authModule.authStore;
+import { useAuthStore } from "../../store/auth";
 import { extractError } from "../../api/chat";
 
 function initial(name) {

@@ -1,8 +1,4 @@
-// 🔴 موقت: چون شکل صادرات client.js (default / api / client) هنوز دیدهم نشده،
-// هر سه حالت پوشش داده شده. این خط با فایل تو کار کرده، پس دست نمی‌زنیم.
-// (اختیاری: بعداً client.js را بفرست تا به یک import ساده تبدیلش کنم.)
-import * as clientModule from "./client";
-const api = clientModule.default ?? clientModule.api ?? clientModule.client;
+import api from "./client";
 
 // اگر client.js اینترسپتوری دارد که خودش data را برمی‌گرداند، مقدار دست‌نخورده
 // برمی‌گردد؛ در غیر این صورت res.data را باز می‌کند. با هر دو حالت سازگار است.
@@ -39,9 +35,6 @@ export async function apiListMessages(conversationId, { before, limit } = {}) {
   return unwrap(api.get(`/chat/conversations/${conversationId}/messages/${query}`));
 }
 
-// بیمه موقت: اگر فایل قدیمی‌ای هنوز apiFetchMessages را import می‌کرد نشکند.
-// در فاز ۲-هـ می‌توانی این یک خط را حذف کنی.
-export const apiFetchMessages = apiListMessages;
 
 export async function apiSendMessage(conversationId, text) {
   return unwrap(api.post(`/chat/conversations/${conversationId}/messages/`, { text }));

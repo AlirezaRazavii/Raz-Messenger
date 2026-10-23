@@ -1,11 +1,5 @@
 import { create } from "zustand";
-import * as authModule from "./auth";
-
-const useAuthStore =
-  authModule.default ??
-  authModule.useAuthStore ??
-  authModule.useAuth ??
-  authModule.authStore;
+import { useAuthStore } from "./auth";
 import {
   apiListConversations,
   apiCreateConversation,
@@ -13,12 +7,9 @@ import {
   apiSendMessage,
   apiEditMessage,
   apiDeleteMessage,
+  apiSearchUsers,
   extractError,
 } from "../api/chat";
-import * as ChatAPI from "../api/chat";
-
-const apiSearchUsers =
-  ChatAPI.apiSearchUsers ?? ChatAPI.searchUsers ?? ChatAPI.apiListUsers ?? null;
 
 const TYPING_TTL = 4000;
 const lastSelfTyping = {}; // محافظ اکو: آخرین باری که خودم رویداد typing فرستادم
@@ -222,7 +213,15 @@ const useChatStore = create((set, get) => ({
     try {
       const data = await apiListConversations();
       const list = Array.isArray(data) ? data : data?.results ?? [];
-      set({ conversations: list });
+      // seed تیک خوانده‌شدن از سرور — فقط اگر از مقدار زنده‌ی موجود بزرگ‌تر باشد (رو به جلو)
+      set((s) => {
+        const readUpTo = { ...s.readUpTo };
+        for (const c of list) {
+          const v = Number(c.other_last_read_id ?? 0) || 0;
+          if (v > (readUpTo[c.id] ?? 0)) readUpTo[c.id] = v;
+        }
+        return { conversations: list, readUpTo };
+      });
     } catch (e) {
       console.error("خطا در دریافت گفتگوها:", extractError ? extractError(e) : e);
     } finally {
@@ -234,11 +233,17 @@ const useChatStore = create((set, get) => ({
     const data = await apiCreateConversation(username);
     const conv = data?.conversation ?? data;
     if (conv?.id) {
-      set((s) => ({
-        conversations: s.conversations.some((c) => c.id === conv.id)
-          ? s.conversations
-          : [conv, ...s.conversations],
-      }));
+      set((s) => {
+        const readUpTo = { ...s.readUpTo };
+        const v = Number(conv.other_last_read_id ?? 0) || 0;
+        if (v > (readUpTo[conv.id] ?? 0)) readUpTo[conv.id] = v;
+        return {
+          conversations: s.conversations.some((c) => c.id === conv.id)
+            ? s.conversations
+            : [conv, ...s.conversations],
+          readUpTo,
+        };
+      });
       get().setActive(conv.id);
     }
     return conv;

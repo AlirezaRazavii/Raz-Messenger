@@ -1,15 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowRight, Check, Loader2, MoreHorizontal, Pencil, SendHorizonal, Trash2, X,
+  ArrowRight, Check, CheckCheck, Loader2, MoreHorizontal, Pencil, SendHorizonal, Trash2, X,
 } from "lucide-react";
 import useChatStore from "../../store/chat";
-import * as authModule from "../../store/auth";
-
-const useAuthStore =
-  authModule.default ??
-  authModule.useAuthStore ??
-  authModule.useAuth ??
-  authModule.authStore;
+import { useAuthStore } from "../../store/auth";
 import { extractError } from "../../api/chat";
 
 const EMPTY_BUCKET = { list: [], hasMore: false, loading: false };
@@ -27,6 +21,37 @@ function fmtTime(iso) {
   }
 }
 
+function dayKey(iso) {
+  const d = new Date(iso);
+  return `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+}
+
+function dayLabel(iso) {
+  const d = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date();
+  yesterday.setDate(today.getDate() - 1);
+  if (dayKey(d) === dayKey(today)) return "امروز";
+  if (dayKey(d) === dayKey(yesterday)) return "دیروز";
+  const sameYear = d.getFullYear() === today.getFullYear();
+  return d.toLocaleDateString(
+    "fa-IR",
+    sameYear
+      ? { day: "numeric", month: "long" }
+      : { day: "numeric", month: "long", year: "numeric" }
+  );
+}
+
+function DaySeparator({ label }) {
+  return (
+    <div className="my-4 flex items-center justify-center">
+      <span className="rounded-full bg-slate-200/70 px-3 py-1 text-[11px] font-medium text-slate-500">
+        {label}
+      </span>
+    </div>
+  );
+}
+
 function lastSeenText(iso) {
   if (!iso) return "آفلاین";
   try {
@@ -41,6 +66,7 @@ export default function ChatWindow() {
   const conv = useChatStore((s) => s.conversations.find((c) => c.id === s.activeId) ?? null);
   const bucket = useChatStore((s) => s.messages[s.activeId] ?? EMPTY_BUCKET);
   const typingMap = useChatStore((s) => s.typing[s.activeId]);
+  const readUpTo = useChatStore((s) => s.readUpTo[s.activeId] ?? 0);
   const myId = useAuthStore((s) => s.user?.id ?? s.userId ?? null);
 
   const setActive = useChatStore((s) => s.setActive);
@@ -240,7 +266,15 @@ export default function ChatWindow() {
               <p className="whitespace-pre-wrap break-words text-sm leading-6">{m.text}</p>
               <div className={`mt-1 flex items-center gap-1.5 text-[10px] ${mine ? "text-emerald-100" : "text-slate-400"}`}>
                 {isEdited && <span>ویرایش‌شده</span>}
-                <span className="mr-auto">{fmtTime(m.created_at ?? m.created)}</span>
+                <span className="mr-auto flex items-center gap-1">
+                  {fmtTime(m.created_at ?? m.created)}
+                  {mine &&
+                    (m.id <= readUpTo ? (
+                      <CheckCheck className="h-3.5 w-3.5" title="خوانده شد" />
+                    ) : (
+                      <Check className="h-3.5 w-3.5" title="ارسال شد" />
+                    ))}
+                </span>
               </div>
             </>
           )}
@@ -343,7 +377,20 @@ export default function ChatWindow() {
             <p className="text-xs text-slate-400">اولین پیام را شما بفرستید</p>
           </div>
         )}
-        <div className="mx-auto flex max-w-3xl flex-col">{bucket.list.map(renderBubble)}</div>
+        <div className="mx-auto flex max-w-3xl flex-col">
+          {bucket.list.map((m, i) => {
+            const prev = bucket.list[i - 1];
+            const ts = m.created_at ?? m.created;
+            const prevTs = prev?.created_at ?? prev?.created;
+            const showDay = !prev || dayKey(prevTs) !== dayKey(ts);
+            return (
+              <div key={m.id}>
+                {showDay && <DaySeparator label={dayLabel(ts)} />}
+                {renderBubble(m)}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* جعبه نوشتن */}
