@@ -1,87 +1,71 @@
-import { useEffect, useState } from 'react'
-import { Link, useNavigate } from 'react-router-dom'
-import { LogOut, MessageCircle, Settings, ShieldCheck } from 'lucide-react'
-import moment from 'moment-jalaali'
+import { useEffect } from "react";
+import { MessageCircle } from "lucide-react";
+import useChatStore from "../store/chat";
+import useChatSocket from "../hooks/useChatSocket";
+import Sidebar from "../components/chat/Sidebar";
+import ChatWindow from "../components/chat/ChatWindow";
 
-import { apiLogout, apiMe } from '../api/auth'
-import { useAuthStore } from '../store/auth'
+function EmptyState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-4 p-8 text-center">
+      <div className="grid h-20 w-20 place-items-center rounded-full bg-emerald-50 text-emerald-600">
+        <MessageCircle className="h-10 w-10" />
+      </div>
+      <div className="text-lg font-bold text-slate-700">یک گفتگو را انتخاب کنید</div>
+      <p className="max-w-xs text-sm leading-6 text-slate-400">
+        از ستون کنار، گفتگوی موجود را باز کنید یا با دکمه «گفتگوی جدید» گفتگوی تازه‌ای شروع کنید.
+      </p>
+    </div>
+  );
+}
 
 export default function HomePage() {
-  const navigate = useNavigate()
-  const { user, refresh, setUser, logout } = useAuthStore()
-  const [loggingOut, setLoggingOut] = useState(false)
+  useChatSocket();
+
+  const activeId = useChatStore((s) => s.activeId);
+  const connected = useChatStore((s) => s.connected);
 
   useEffect(() => {
-    apiMe()
-      .then(({ data }) => setUser(data))
-      .catch(() => {})
-  }, [setUser])
-
-  const onLogout = async () => {
-    setLoggingOut(true)
-    try {
-      await apiLogout(refresh)
-    } catch {
-      // حتی اگر سرور قبول نکرد، محلی هم خارج می‌شویم
-    }
-    logout()
-    navigate('/login', { replace: true })
-  }
-
-  const joined = user?.date_joined ? moment(user.date_joined).format('jYYYY/jMM/jDD') : '—'
+    useChatStore.getState().loadConversations();
+  }, []);
 
   return (
-    <div dir="rtl" className="min-h-screen bg-slate-100">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-4xl items-center justify-between px-4 py-3">
-          <div className="flex items-center gap-2">
-            <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-emerald-600 text-white">
-              <MessageCircle className="h-5 w-5" />
-            </div>
-            <span className="font-bold text-slate-800">پیام‌رسان راز</span>
-          </div>
-          <div className="flex items-center gap-3">
-            <Link
-              to="/settings"
-              className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm text-slate-600 transition hover:bg-slate-100"
-            >
-              <Settings className="h-4 w-4" />
-              تغییر رمز
-            </Link>
-            <button
-              onClick={onLogout}
-              disabled={loggingOut}
-              className="flex items-center gap-1.5 rounded-xl px-3 py-1.5 text-sm text-red-600 transition hover:bg-red-50 disabled:opacity-60"
-            >
-              <LogOut className="h-4 w-4" />
-              خروج
-            </button>
+    <div className="flex h-[100dvh] w-full flex-col bg-slate-100">
+      <header className="flex shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 py-2.5">
+        <div className="flex items-center gap-2.5">
+          <span className="grid h-9 w-9 place-items-center rounded-full bg-emerald-600 text-white">
+            <MessageCircle className="h-5 w-5" />
+          </span>
+          <div className="leading-tight">
+            <div className="font-extrabold text-slate-800">راز</div>
+            <div className="text-[11px] text-slate-400">پیام‌رسان امن شما</div>
           </div>
         </div>
+        <span
+          className={`flex items-center gap-1.5 rounded-full px-3 py-1 text-xs font-medium ${
+            connected ? "bg-emerald-50 text-emerald-700" : "bg-amber-50 text-amber-700"
+          }`}
+        >
+          <span
+            className={`h-2 w-2 rounded-full ${connected ? "bg-emerald-500" : "animate-pulse bg-amber-500"}`}
+          />
+          {connected ? "متصل" : "در حال اتصال…"}
+        </span>
       </header>
 
-      <main className="mx-auto max-w-4xl space-y-4 p-4">
-        <div className="flex items-center gap-4 rounded-2xl border border-slate-200 bg-white p-5">
-          <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-full bg-emerald-100 text-xl font-bold text-emerald-700">
-            {user?.username?.[0]?.toUpperCase() || '؟'}
-          </div>
-          <div>
-            <h1 className="font-bold text-slate-800">{user?.username}</h1>
-            <p className="mt-0.5 text-sm text-slate-500" dir="ltr">
-              {user?.email}
-            </p>
-            <p className="mt-0.5 text-xs text-slate-400">عضویت: {joined}</p>
-          </div>
-        </div>
+      <div className="flex min-h-0 flex-1">
+        <aside
+          className={`${
+            activeId ? "hidden md:flex" : "flex"
+          } w-full shrink-0 flex-col border-l border-slate-200 bg-white md:w-80 lg:w-96`}
+        >
+          <Sidebar />
+        </aside>
 
-        <div className="rounded-2xl border border-dashed border-emerald-300 bg-emerald-50/60 p-8 text-center">
-          <ShieldCheck className="mx-auto h-10 w-10 text-emerald-600" />
-          <h2 className="mt-3 font-bold text-slate-800">فاز ۱ کامل شد — احراز هویت آماده است</h2>
-          <p className="mt-1 text-sm leading-6 text-slate-600">
-            صفحه اصلی فعلاً خالی است؛ چت خصوصی و گروهی در فازهای ۲ و ۴ همین‌جا قرار می‌گیرد.
-          </p>
-        </div>
-      </main>
+        <main className={`${activeId ? "flex" : "hidden md:flex"} min-w-0 flex-1`}>
+          {activeId ? <ChatWindow /> : <EmptyState />}
+        </main>
+      </div>
     </div>
-  )
+  );
 }

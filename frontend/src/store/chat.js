@@ -1,0 +1,355 @@
+import { create } from "zustand";
+import * as authModule from "./auth";
+
+const useAuthStore =
+  authModule.default ??
+  authModule.useAuthStore ??
+  authModule.useAuth ??
+  authModule.authStore;
+import {
+  apiListConversations,
+  apiCreateConversation,
+  apiListMessages,
+  apiSendMessage,
+  apiEditMessage,
+  apiDeleteMessage,
+  extractError,
+} from "../api/chat";
+import * as ChatAPI from "../api/chat";
+
+const apiSearchUsers =
+  ChatAPI.apiSearchUsers ?? ChatAPI.searchUsers ?? ChatAPI.apiListUsers ?? null;
+
+const TYPING_TTL = 4000;
+const lastSelfTyping = {}; // محافظ اکو: آخرین باری که خودم رویداد typing فرستادم
+
+function myId() {
+  const s = useAuthStore.getState() || {};
+  const u = s.user || {};
+  return s.userId ?? s.user_id ?? u.id ?? u.pk ?? null;
+}
+
+function convIdOf(m) {
+  if (!m) return null;
+  if (typeof m.conversation === "number") return m.conversation;
+  if (m.conversation && typeof m.conversation === "object") return m.conversation.id ?? null;
+  return m.conversation_id ?? m.conv_id ?? null;
+}
+
+function senderIdOf(m) {
+  if (!m) return null;
+  if (typeof m.sender === "number") return m.sender;
+  if (m.sender && typeof m.sender === "object") return m.sender.id ?? null;
+  return m.sender_id ?? null;
+}
+
+const useChatStore = create((set, get) => ({
+  connected: false,
+  socketSend: null,
+
+  conversations: [],
+  conversationsLoading: false,
+  activeId: null,
+
+  // { [convId]: { list: [], hasMore: false, loading: false } }
+  messages: {},
+
+  // { [convId]: { [userId]: expiresAtMs } }
+  typing: {},
+
+  // { [convId]: message_id } — آخرین پیام خوانده‌شده توسط طرف مقابل (برای فاز ۲-هـ)
+  readUpTo: {},
+
+  // ---------------- اتصال ----------------
+  setConnected: (v) => set({ connected: v }),
+  setSocketSend: (fn) => set({ socketSend: fn }),
+
+  sendCommand: (payload) => {
+    const fn = get().socketSend;
+    if (typeof fn === "function") {
+      try { fn(payload); return true; } catch { return false; }
+    }
+    return false;
+  },
+
+  onSocketOpen: () => {
+    get().loadConversations();
+    const { activeId } = get();
+    if (activeId) get().loadMessages(activeId, { reset: true });
+  },
+
+  // ---------------- رویدادهای ورودی WebSocket ----------------
+  handleSocketEvent: (data) => {
+    if (!data || typeof data !== "object") return;
+    // پشتیبانی از هر دو شکل ممکن پیام سرور (مستقیم یا لفافی chat.event)
+    let ev = data;
+    if (data.event && typeof data.event === "object") ev = data.event;
+    const kind = typeof ev.event === "string" ? ev.event : (ev.type ?? null);
+
+    switch (kind) {
+      case "ws.connected": get().setConnected(true); break;
+      case "presence": get()._applyPresence(ev.user_id, ev.online); break;
+      case "typing": get()._applyTyping(ev.conversation_id, ev.user_id, ev.state); break;
+      case "read": get()._applyRead(ev.conversation_id, ev.message_id ?? ev.last_read_message_id); break;
+      case "message.new": get()._applyMessageNew(ev.message); break;
+      case "message.edited": get()._applyMessageEdited(ev.message); break;
+      case "message.deleted": get()._applyMessageDeleted(ev); break;
+      case "conversation.new": get()._applyConversationNew(ev); break;
+      default: break;
+    }
+  },
+
+  _applyPresence: (userId, online) => {
+    if (!userId) return;
+    set((s) => ({
+      conversations: s.conversations.map((c) => {
+        const oid = c.other_user?.id ?? c.other_user?.pk;
+        return oid === userId ? { ...c, other_user: { ...c.other_user, online: Boolean(online) } } : c;
+      }),
+    }));
+  },
+
+  _applyTyping: (convId, userId, state) => {
+    if (!convId) return;
+    const me = myId();
+    let uid = userId;
+    if (uid == null) {
+      // اگر سرور user_id نفرستاد: اگر همین الان خودم typing فرستاده‌ام، اکو است
+      if (Date.now() - (lastSelfTyping[convId] ?? 0) < 3500) return;
+      const conv = get().conversations.find((c) => c.id === convId);
+      uid = conv?.other_user?.id ?? conv?.other_user?.pk ?? -1;
+    }
+    if (me != null && uid === me) return;
+    // سرور "on"/"off" می‌فرستد؛ رشته‌ی "off" در جاوااسکریپت truthy است!
+    const isOn = state === true || state === "on" || state === 1;
+    set((s) => {
+      const inConv = { ...(s.typing[convId] || {}) };
+      if (isOn) inConv[uid] = Date.now() + TYPING_TTL;
+      else delete inConv[uid];
+      return { typing: { ...s.typing, [convId]: inConv } };
+    });
+  },
+
+  _applyRead: (convId, messageId) => {
+    if (!convId || !messageId) return;
+    set((s) => ({ readUpTo: { ...s.readUpTo, [convId]: messageId } }));
+  },
+
+  _applyMessageNew: (m) => {
+    const convId = convIdOf(m);
+    if (!m || !convId) return;
+    const s0 = get();
+    if (s0.messages[convId]?.list?.some((x) => x.id === m.id)) return; // جلوگیری از تکرار
+    const mine = senderIdOf(m) === myId();
+    const isActive = s0.activeId === convId;
+    const convExists = s0.conversations.some((c) => c.id === convId);
+
+    set((s) => {
+      const messages = { ...s.messages };
+      if (isActive) {
+        const b = messages[convId] ?? { list: [], hasMore: false, loading: false };
+        messages[convId] = { ...b, list: [...b.list, m] };
+      }
+      const conversations = [...s.conversations];
+      const idx = conversations.findIndex((c) => c.id === convId);
+      if (idx >= 0) {
+        const c = { ...conversations[idx], last_message: m };
+        if (!mine && !isActive) c.unread_count = (c.unread_count ?? 0) + 1;
+        conversations.splice(idx, 1);
+        conversations.unshift(c);
+      }
+      // با رسیدن پیام، نشانگر تایپینگ فرستنده خاموش شود
+      let typing = s.typing;
+      if (!mine && s.typing[convId]) {
+        const inConv = { ...(s.typing[convId] || {}) };
+        delete inConv[senderIdOf(m)];
+        typing = { ...s.typing, [convId]: inConv };
+      }
+      return { messages, conversations, typing };
+    });
+
+    if (!convExists) get().loadConversations();
+    if (isActive && !mine) get().markRead(convId, m.id);
+  },
+
+  _applyMessageEdited: (m, hint) => {
+    if (!m) return;
+    const convId = convIdOf(m) ?? hint ?? null;
+    set((s) => {
+      const messages = { ...s.messages };
+      const ids = convId ? [convId] : Object.keys(messages);
+      for (const cid of ids) {
+        const b = messages[cid];
+        if (!b || !b.list.some((x) => x.id === m.id)) continue;
+        messages[cid] = { ...b, list: b.list.map((x) => (x.id === m.id ? m : x)) };
+      }
+      const conversations = s.conversations.map((c) =>
+        c.last_message && c.last_message.id === m.id ? { ...c, last_message: m } : c
+      );
+      return { messages, conversations };
+    });
+  },
+
+  _applyMessageDeleted: (data) => {
+    const mid = data?.id ?? data?.message_id ?? data?.message?.id;
+    if (!mid) return;
+    set((s) => {
+      const messages = { ...s.messages };
+      for (const cid of Object.keys(messages)) {
+        const b = messages[cid];
+        if (!b || !b.list.some((x) => x.id === mid)) continue;
+        messages[cid] = { ...b, list: b.list.filter((x) => x.id !== mid) };
+      }
+      const conversations = s.conversations.map((c) =>
+        c.last_message && c.last_message.id === mid ? { ...c, last_message: null } : c
+      );
+      return { messages, conversations };
+    });
+  },
+
+  _applyConversationNew: (data) => {
+    const conv = data?.conversation ?? null;
+    if (conv?.id && !get().conversations.some((c) => c.id === conv.id)) {
+      set((s) => ({ conversations: [conv, ...s.conversations] }));
+    } else if (!conv) {
+      get().loadConversations();
+    }
+  },
+
+  // ---------------- اکشن‌های REST ----------------
+  loadConversations: async () => {
+    set({ conversationsLoading: true });
+    try {
+      const data = await apiListConversations();
+      const list = Array.isArray(data) ? data : data?.results ?? [];
+      set({ conversations: list });
+    } catch (e) {
+      console.error("خطا در دریافت گفتگوها:", extractError ? extractError(e) : e);
+    } finally {
+      set({ conversationsLoading: false });
+    }
+  },
+
+  createConversation: async (username) => {
+    const data = await apiCreateConversation(username);
+    const conv = data?.conversation ?? data;
+    if (conv?.id) {
+      set((s) => ({
+        conversations: s.conversations.some((c) => c.id === conv.id)
+          ? s.conversations
+          : [conv, ...s.conversations],
+      }));
+      get().setActive(conv.id);
+    }
+    return conv;
+  },
+
+  setActive: (convId) => {
+    set({ activeId: convId });
+    if (convId == null) return;
+    const s = get();
+    // صفر کردن شمارنده نخوانده
+    set((st) => ({
+      conversations: st.conversations.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c)),
+    }));
+    if (!s.messages[convId]) {
+      get().loadMessages(convId, { reset: true });
+    } else {
+      const list = s.messages[convId].list;
+      const last = list[list.length - 1];
+      if (last) get().markRead(convId, last.id);
+    }
+  },
+
+  loadMessages: async (convId, { before, reset = false } = {}) => {
+    set((s) => {
+      const b = s.messages[convId] ?? { list: [], hasMore: false, loading: false };
+      return { messages: { ...s.messages, [convId]: { ...b, loading: true } } };
+    });
+    try {
+      const data = await apiListMessages(convId, before ? { before } : undefined);
+      const results = Array.isArray(data) ? data : data?.results ?? [];
+      const hasMore = Boolean(data?.has_more);
+      set((s) => {
+        const b = s.messages[convId] ?? { list: [], hasMore: false, loading: false };
+        const seen = new Set();
+        const merged = [...(reset ? [] : b.list), ...results]
+          .filter((m) => !seen.has(m.id) && seen.add(m.id))
+          .sort((x, y) => x.id - y.id);
+        return { messages: { ...s.messages, [convId]: { list: merged, hasMore, loading: false } } };
+      });
+      if (reset && get().activeId === convId) {
+        const list = get().messages[convId]?.list ?? [];
+        const last = list[list.length - 1];
+        if (last) get().markRead(convId, last.id);
+      }
+    } catch (e) {
+      console.error("خطا در دریافت پیام‌ها:", extractError ? extractError(e) : e);
+      set((s) => {
+        const b = s.messages[convId] ?? { list: [], hasMore: false, loading: false };
+        return { messages: { ...s.messages, [convId]: { ...b, loading: false } } };
+      });
+    }
+  },
+
+  sendMessage: async (convId, text) => {
+    const m = await apiSendMessage(convId, text);
+    if (m?.id) {
+      set((s) => {
+        const messages = { ...s.messages };
+        const b = messages[convId] ?? { list: [], hasMore: false, loading: false };
+        if (!b.list.some((x) => x.id === m.id)) {
+          messages[convId] = { ...b, list: [...b.list, m] };
+        }
+        const conversations = [...s.conversations];
+        const idx = conversations.findIndex((c) => c.id === convId);
+        if (idx >= 0) {
+          const c = { ...conversations[idx], last_message: m };
+          conversations.splice(idx, 1);
+          conversations.unshift(c);
+        }
+        return { messages, conversations };
+      });
+      get().sendTyping(convId, false);
+    }
+    return m;
+  },
+
+  editMessage: async (convId, messageId, text) => {
+    const data = await apiEditMessage(messageId, text);
+    get()._applyMessageEdited(data?.message ?? data, convId);
+    return data;
+  },
+
+  deleteMessage: async (convId, messageId) => {
+    await apiDeleteMessage(messageId);
+    get()._applyMessageDeleted({ id: messageId });
+  },
+
+  searchUsers: async (q) => {
+    if (typeof apiSearchUsers !== "function") {
+      throw new Error("تابع جستجوی کاربر در api/chat.js پیدا نشد");
+    }
+    const data = await apiSearchUsers(q);
+    return Array.isArray(data) ? data : data?.results ?? [];
+  },
+
+  // ---------------- فرمان‌های خروجی WebSocket ----------------
+  markRead: (convId, messageId) => {
+    if (!convId || !messageId) return;
+    set((s) => ({
+      conversations: s.conversations.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c)),
+    }));
+    get().sendCommand({ type: "read", conversation_id: convId, message_id: messageId });
+  },
+
+  sendTyping: (convId, state) => {
+    if (!convId) return;
+    if (state) lastSelfTyping[convId] = Date.now();
+    else delete lastSelfTyping[convId];
+    // سرور رشته‌ی "on"/"off" می‌خواهد — بولین بی‌صدا دور انداخته می‌شود
+    get().sendCommand({ type: "typing", conversation_id: convId, state: state ? "on" : "off" });
+  },
+}));
+
+export default useChatStore;
