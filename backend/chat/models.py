@@ -42,6 +42,14 @@ class Message(models.Model):
         related_name="sent_messages",
     )
     text = models.TextField("متن")
+    reply_to = models.ForeignKey(
+        "self",
+        verbose_name="پاسخ به",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="replies",
+    )
     created_at = models.DateTimeField("زمان ارسال", auto_now_add=True)
     edited_at = models.DateTimeField("زمان ویرایش", null=True, blank=True)
 

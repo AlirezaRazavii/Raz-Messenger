@@ -1,8 +1,8 @@
 from django.contrib.auth import get_user_model
-from rest_framework.test import APITestCase
+from rest_framework.test import APITestCase, APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
 
-from .models import Conversation, Participant
+from .models import Conversation, Participant, Message
 
 User = get_user_model()
 
@@ -223,3 +223,101 @@ class ConversationListTests(ChatAPITestBase):
         ids = [c["id"] for c in response.json()]
         self.assertEqual(ids[0], with_alice)
         self.assertEqual(ids[1], with_carol)
+        
+class MessageActionsTests(APITestCase):
+    """تست‌های پاسخ/فوروارد/کپی — قسمت ۲-و"""
+
+    def setUp(self):
+        User = get_user_model()
+        self.alice = User.objects.create_user(
+            username="alice", email="alice@example.test", password="Passw0rd!"
+        )
+        self.bob = User.objects.create_user(
+            username="bob", email="bob@example.test", password="Passw0rd!"
+        )
+        self.carol = User.objects.create_user(
+            username="carol", email="carol@example.test", password="Passw0rd!"
+        )
+        self.conv_ab = Conversation.objects.create()
+        Participant.objects.create(conversation=self.conv_ab, user=self.alice)
+        Participant.objects.create(conversation=self.conv_ab, user=self.bob)
+        self.conv_ac = Conversation.objects.create()
+        Participant.objects.create(conversation=self.conv_ac, user=self.alice)
+        Participant.objects.create(conversation=self.conv_ac, user=self.carol)
+        self.client = APIClient()
+
+    def test_reply_creates_message_with_reply_info(self):
+        self.client.force_authenticate(self.alice)
+        first = Message.objects.create(conversation=self.conv_ab, sender=self.bob, text="سلام")
+        res = self.client.post(
+            f"/api/chat/conversations/{self.conv_ab.id}/messages/",
+            {"text": "درود", "reply_to": first.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["reply_to"]["id"], first.id)
+        self.assertEqual(res.data["reply_to"]["sender_username"], "bob")
+        self.assertEqual(res.data["reply_to"]["text"], "سلام")
+
+    def test_reply_from_other_conversation_rejected(self):
+        self.client.force_authenticate(self.alice)
+        foreign = Message.objects.create(conversation=self.conv_ac, sender=self.carol, text="خارجی")
+        res = self.client.post(
+            f"/api/chat/conversations/{self.conv_ab.id}/messages/",
+            {"text": "درود", "reply_to": foreign.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_reply_still_requires_text(self):
+        self.client.force_authenticate(self.alice)
+        res = self.client.post(
+            f"/api/chat/conversations/{self.conv_ab.id}/messages/",
+            {"reply_to": 123},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 400)
+
+    def test_history_includes_reply_to(self):
+        self.client.force_authenticate(self.alice)
+        first = Message.objects.create(conversation=self.conv_ab, sender=self.bob, text="پیام اول")
+        Message.objects.create(conversation=self.conv_ab, sender=self.alice, text="پاسخ", reply_to=first)
+        res = self.client.get(f"/api/chat/conversations/{self.conv_ab.id}/messages/")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.data["results"][0]["reply_to"]["id"], first.id)
+
+    def test_forward_to_my_conversation(self):
+        self.client.force_authenticate(self.alice)
+        src = Message.objects.create(conversation=self.conv_ab, sender=self.bob, text="قابل فوروارد")
+        res = self.client.post(
+            f"/api/chat/messages/{src.id}/forward/",
+            {"conversation_id": self.conv_ac.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["conversation"], self.conv_ac.id)
+        self.assertEqual(res.data["text"], "قابل فوروارد")
+        self.assertEqual(res.data["sender"]["id"], self.alice.id)
+        self.assertIsNone(res.data["reply_to"])
+
+    def test_forward_to_foreign_conversation_fails(self):
+        # bob عضو گفتگوی alice-carol نیست
+        self.client.force_authenticate(self.bob)
+        src = Message.objects.create(conversation=self.conv_ab, sender=self.alice, text="متن")
+        res = self.client.post(
+            f"/api/chat/messages/{src.id}/forward/",
+            {"conversation_id": self.conv_ac.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 404)
+
+    def test_forward_from_foreign_conversation_fails(self):
+        # carol عضو گفتگوی alice-bob نیست؛ نباید بتواند پیام آن گفتگو را ببیند
+        self.client.force_authenticate(self.carol)
+        src = Message.objects.create(conversation=self.conv_ab, sender=self.alice, text="متن")
+        res = self.client.post(
+            f"/api/chat/messages/{src.id}/forward/",
+            {"conversation_id": self.conv_ac.id},
+            format="json",
+        )
+        self.assertEqual(res.status_code, 404)

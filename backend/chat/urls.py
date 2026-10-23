@@ -13,4 +13,9 @@ urlpatterns = [
         name="message-list",
     ),
     path("messages/<int:msg_id>/", views.MessageDetailView.as_view(), name="message-detail"),
+    path(
+        "messages/<int:msg_id>/forward/",
+        views.MessageForwardView.as_view(),
+        name="message-forward",
+    ),
 ]

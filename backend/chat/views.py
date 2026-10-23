@@ -203,7 +203,9 @@ class MessageListCreateView(APIView):
             limit = HISTORY_PAGE_DEFAULT
         limit = max(1, min(limit, HISTORY_PAGE_MAX))
 
-        qs = Message.objects.filter(conversation=conv).select_related("sender")
+        qs = Message.objects.filter(conversation=conv).select_related(
+            "sender", "reply_to", "reply_to__sender"
+        )
         if before > 0:
             qs = qs.filter(id__lt=before)
         msgs = list(qs.order_by("-id")[: limit + 1])
@@ -228,13 +230,32 @@ class MessageListCreateView(APIView):
                 status=400,
             )
 
+        # پاسخ به پیام (اختیاری) — باید متعلق به همین گفتگو باشد
+        reply_to = None
+        raw_reply = request.data.get("reply_to")
+        if raw_reply not in (None, ""):
+            try:
+                reply_id = int(raw_reply)
+            except (TypeError, ValueError):
+                return Response({"reply_to": ["شناسه پیام نامعتبر است."]}, status=400)
+            reply_to = Message.objects.filter(id=reply_id, conversation=conv).first()
+            if reply_to is None:
+                return Response({"reply_to": ["پیام موردنظر در این گفتگو پیدا نشد."]}, status=400)
+
         with transaction.atomic():
-            msg = Message.objects.create(conversation=conv, sender=request.user, text=text)
+            msg = Message.objects.create(
+                conversation=conv, sender=request.user, text=text, reply_to=reply_to
+            )
             # گفتگو به بالای لیست برود + پیام خودمان طبیعتاً خوانده‌شده است
             conv.save(update_fields=["updated_at"])
             Participant.objects.filter(conversation=conv, user=request.user).update(
                 last_read_message_id=msg.id
             )
+
+        # روابط پاسخ برای سریالایز یک‌جا لود شوند
+        msg = Message.objects.select_related(
+            "sender", "reply_to", "reply_to__sender"
+        ).get(pk=msg.pk)
 
         push_to_users(
             _conversation_participant_ids(conv),
@@ -246,7 +267,9 @@ class MessageListCreateView(APIView):
 class MessageDetailView(APIView):
     def patch(self, request, msg_id):
         msg = (
-            Message.objects.select_related("sender", "conversation")
+            Message.objects.select_related(
+                "sender", "conversation", "reply_to", "reply_to__sender"
+            )
             .filter(id=msg_id)
             .first()
         )
@@ -298,3 +321,40 @@ class MessageDetailView(APIView):
             },
         )
         return Response(status=204)
+    
+class MessageForwardView(APIView):
+    """فوروارد پیام به گفتگوی دیگر — متن کپی می‌شود و فرستنده‌ی جدید، خودِ کاربر است."""
+
+    def post(self, request, msg_id):
+        src = Message.objects.select_related("conversation").filter(id=msg_id).first()
+        if src is None or _get_my_conversation(request.user, src.conversation_id) is None:
+            return Response({"detail": "پیام پیدا نشد."}, status=404)
+
+        try:
+            target_id = int(request.data.get("conversation_id"))
+        except (TypeError, ValueError):
+            return Response({"conversation_id": ["شناسه گفتگو نامعتبر است."]}, status=400)
+        target = _get_my_conversation(request.user, target_id)
+        if target is None:
+            return Response({"conversation_id": ["گفتگو مقصد پیدا نشد."]}, status=404)
+
+        text = _clean_text(src.text)
+        if not text:
+            return Response({"detail": "این پیام قابل فوروارد نیست."}, status=400)
+
+        with transaction.atomic():
+            msg = Message.objects.create(conversation=target, sender=request.user, text=text)
+            target.save(update_fields=["updated_at"])
+            Participant.objects.filter(conversation=target, user=request.user).update(
+                last_read_message_id=msg.id
+            )
+
+        msg = Message.objects.select_related(
+            "sender", "reply_to", "reply_to__sender"
+        ).get(pk=msg.pk)
+
+        push_to_users(
+            _conversation_participant_ids(target),
+            {"type": "message.new", "message": MessageSerializer(msg).data},
+        )
+        return Response(MessageSerializer(msg).data, status=201)
