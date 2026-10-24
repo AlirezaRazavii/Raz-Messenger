@@ -1,13 +1,18 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  ArrowRight, Check, CheckCheck, Copy, Forward, Loader2, MoreHorizontal, Pencil,
+  ArrowRight, Check, CheckCheck, Copy, Download, File as FileIcon, Forward,
+  Image as ImageIcon, Loader2, MoreHorizontal, Paperclip, Pencil, Play,
   Reply, SendHorizonal, Trash2, X,
 } from "lucide-react";
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
-import { extractError } from "../../api/chat";
+import { extractError, apiDownloadAttachment } from "../../api/chat";
 
 const EMPTY_BUCKET = { list: [], hasMore: false, loading: false };
+const MAX_UPLOAD_MB = 25;
+
+// کش نشانی‌های blob تصاویر — دوباره‌فچر نشود وقتی حباب دوباره رندر می‌شود
+const objectUrlCache = new Map();
 
 function initial(name) {
   return (name || "؟").trim().charAt(0).toUpperCase();
@@ -20,6 +25,13 @@ function fmtTime(iso) {
   } catch {
     return "";
   }
+}
+
+function fmtSize(bytes) {
+  if (bytes == null) return "";
+  if (bytes < 1024) return `${bytes} بایت`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} کیلوبایت`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} مگابایت`;
 }
 
 function dayKey(iso) {
@@ -60,6 +72,209 @@ function lastSeenText(iso) {
   } catch {
     return "آفلاین";
   }
+}
+
+// فشرده‌سازی عکس سمت کلاینت — پهنای حداکثر ۱۶۰۰، کیفیت ۰٫۸۵
+// گیف دست نمی‌خورد (انیمیشن خراب می‌شود) و اگر نتیجه بزرگ‌تر شد، فایل اصلی می‌ماند
+function compressImage(file, maxDim = 1600, quality = 0.85) {
+  if (!file.type.startsWith("image/") || file.type === "image/gif") return Promise.resolve(file);
+  if (file.size < 300 * 1024) return Promise.resolve(file); // عکس کوچک: لازم نیست
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      try {
+        let { width, height } = img;
+        const scale = Math.min(1, maxDim / Math.max(width, height));
+        width = Math.round(width * scale);
+        height = Math.round(height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext("2d");
+        ctx.fillStyle = "#ffffff"; // پس‌زمینه شفاف PNG در JPEG سیاه نشود
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        canvas.toBlob(
+          (blob) => {
+            if (!blob || blob.size >= file.size) {
+              resolve(file);
+              return;
+            }
+            const out = new File([blob], file.name.replace(/\.\w+$/, ".jpg"), {
+              type: "image/jpeg",
+            });
+            resolve(out);
+          },
+          "image/jpeg",
+          quality
+        );
+      } catch {
+        resolve(file);
+      } finally {
+        URL.revokeObjectURL(url);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+    img.src = url;
+  });
+}
+
+// حباب تصویر — «دانلود دل‌خواه» مثل تلگرام: تا کاربر دکمه را نزند هیچ درخواستی به سرور نمی‌رود.
+// بعد از دانلود، نشانی blob در کش می‌ماند تا جابه‌جایی بین گفتگوها دوباره دانلود نکند (تا رفرش صفحه).
+function MediaImage({ message, onOpen }) {
+  const [url, setUrl] = useState(objectUrlCache.get(message.id) ?? null);
+  const [downloading, setDownloading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const download = async () => {
+    if (downloading || url) return;
+    setDownloading(true);
+    setFailed(false);
+    try {
+      const blob = await apiDownloadAttachment(message.id);
+      if (!blob) throw new Error("empty");
+      if (objectUrlCache.size > 300) {
+        for (const old of objectUrlCache.values()) URL.revokeObjectURL(old);
+        objectUrlCache.clear();
+      }
+      const u = URL.createObjectURL(blob);
+      objectUrlCache.set(message.id, u);
+      setUrl(u);
+    } catch {
+      setFailed(true);
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  if (failed) {
+    return (
+      <div className="mb-1 flex h-48 w-64 flex-col items-center justify-center gap-2 rounded-lg bg-black/10 text-xs opacity-70">
+        خطا در دانلود تصویر
+        <button onClick={download} className="rounded-full bg-black/10 px-3 py-1 hover:bg-black/20">
+          تلاش مجدد
+        </button>
+      </div>
+    );
+  }
+  if (url) {
+    return (
+      <img
+        src={url}
+        alt={message.attachment_name || "تصویر"}
+        onClick={() => onOpen(url)}
+        className="mb-1 max-h-72 w-auto max-w-full cursor-zoom-in rounded-lg object-cover"
+      />
+    );
+  }
+  return (
+    <div className="mb-1 grid h-48 w-64 place-items-center rounded-lg bg-black/10">
+      {downloading ? (
+        <div className="flex flex-col items-center gap-2 text-xs opacity-70">
+          <Loader2 className="h-5 w-5 animate-spin" />
+          در حال دانلود…
+        </div>
+      ) : (
+        <button
+          onClick={download}
+          className="flex flex-col items-center gap-2 text-xs opacity-80 transition-opacity hover:opacity-100"
+          title="دانلود تصویر"
+        >
+          <span className="grid h-10 w-10 place-items-center rounded-full bg-black/10">
+            <Download className="h-5 w-5" />
+          </span>
+          تصویر · {fmtSize(message.attachment_size)}
+        </button>
+      )}
+    </div>
+  );
+}
+
+// حباب فایل/ویس — دانلود/پخش فقط با کلیک کاربر؛ ویس بعد از دریافت با <audio> پخش می‌شود (ضبط در ۳-ج)
+function MediaFile({ message, mine, onDownload }) {
+  const isVoice = message.attachment_kind === "voice";
+  const [audioUrl, setAudioUrl] = useState(objectUrlCache.get(message.id) ?? null);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+
+  const play = async () => {
+    if (loading || audioUrl) return;
+    setLoading(true);
+    setFailed(false);
+    try {
+      const blob = await apiDownloadAttachment(message.id);
+      if (!blob) throw new Error("empty");
+      const u = URL.createObjectURL(blob);
+      objectUrlCache.set(message.id, u);
+      setAudioUrl(u);
+    } catch {
+      setFailed(true);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (isVoice) {
+    if (audioUrl) {
+      return <audio controls src={audioUrl} preload="none" className="mb-1 h-9 w-60" />;
+    }
+    return (
+      <div className={`mb-1 flex min-w-[220px] items-center gap-3 rounded-xl p-2.5 ${mine ? "bg-white/15" : "bg-slate-100"}`}>
+        <button
+          onClick={play}
+          disabled={loading}
+          className={`grid h-10 w-10 shrink-0 place-items-center rounded-full ${
+            mine ? "bg-white/20 text-white hover:bg-white/30" : "bg-white text-slate-500 hover:bg-slate-200"
+          } disabled:opacity-50`}
+          title="پخش"
+        >
+          {loading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Play className="h-5 w-5" />}
+        </button>
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium">پیام صوتی</div>
+          <div className={`text-[11px] ${mine ? "text-emerald-100" : "text-slate-500"}`}>
+            {message.voice_duration ? `${message.voice_duration} ثانیه` : ""}
+            {failed ? " — خطا! دوباره بزن" : ""}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className={`mb-1 flex min-w-[220px] max-w-full items-center gap-3 rounded-xl p-2.5 ${
+        mine ? "bg-white/15" : "bg-slate-100"
+      }`}
+    >
+      <div
+        className={`grid h-10 w-10 shrink-0 place-items-center rounded-full ${
+          mine ? "bg-white/20" : "bg-white"
+        }`}
+      >
+        <FileIcon className={`h-5 w-5 ${mine ? "text-white" : "text-slate-500"}`} />
+      </div>
+      <div className="min-w-0 flex-1">
+        <div className="truncate text-sm font-medium">{message.attachment_name || "فایل"}</div>
+        <div className={`text-[11px] ${mine ? "text-emerald-100" : "text-slate-500"}`}>
+          {fmtSize(message.attachment_size)}
+        </div>
+      </div>
+      <button
+        onClick={onDownload}
+        title="دانلود"
+        className={`grid h-8 w-8 shrink-0 place-items-center rounded-full ${
+          mine ? "text-white hover:bg-white/20" : "text-slate-500 hover:bg-slate-200"
+        }`}
+      >
+        <Download className="h-4 w-4" />
+      </button>
+    </div>
+  );
 }
 
 function ForwardDialog({ message, onClose }) {
@@ -152,16 +367,19 @@ export default function ChatWindow() {
   const [savingEdit, setSavingEdit] = useState(false);
   const [replyTo, setReplyTo] = useState(null);
   const [forwarding, setForwarding] = useState(null);
+  const [pending, setPending] = useState(null); // { file, kind, url }
+  const [lightbox, setLightbox] = useState(null);
   const [, setTick] = useState(0);
 
   const scrollRef = useRef(null);
   const stickBottom = useRef(true);
   const restoreRef = useRef(null);
   const lastTypingSent = useRef(0);
+  const imageInputRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const other = conv?.other_user ?? {};
 
-  // «در حال نوشتن…» با انقضای زمانی
   const otherTyping = Object.entries(typingMap ?? {}).some(
     ([uid, until]) => Number(uid) !== myId && until > Date.now()
   );
@@ -181,9 +399,12 @@ export default function ChatWindow() {
     setReplyTo(null);
     setForwarding(null);
     setError("");
+    if (pending?.url) URL.revokeObjectURL(pending.url);
+    setPending(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
-  // مدیریت اسکرول: پایین‌چسبی یا حفظ موقعیت بعد از بارگذاری قدیمی‌ها
+  // مدیریت اسکرول
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -229,6 +450,54 @@ export default function ChatWindow() {
     }
   };
 
+  // ---------- پیوست ----------
+  const pickImage = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setError(`حجم فایل نمی‌تواند بیش از ${MAX_UPLOAD_MB} مگابایت باشد.`);
+      return;
+    }
+    setError("");
+    const out = await compressImage(file);
+    setPending({ file: out, kind: "image", url: URL.createObjectURL(out) });
+  };
+
+  const pickFile = (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (file.size > MAX_UPLOAD_MB * 1024 * 1024) {
+      setError(`حجم فایل نمی‌تواند بیش از ${MAX_UPLOAD_MB} مگابایت باشد.`);
+      return;
+    }
+    setError("");
+    setPending({ file, kind: "file", url: null });
+  };
+
+  const removePending = () => {
+    if (pending?.url) URL.revokeObjectURL(pending.url);
+    setPending(null);
+  };
+
+  const doDownload = async (m) => {
+    setError("");
+    try {
+      const blob = await apiDownloadAttachment(m.id);
+      const u = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = u;
+      a.download = m.attachment_name || "file";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(u), 60000);
+    } catch (e) {
+      setError(extractError ? extractError(e) : "خطا در دانلود فایل");
+    }
+  };
+
   const doCopy = async (m) => {
     setMenuFor(null);
     try {
@@ -259,17 +528,34 @@ export default function ChatWindow() {
 
   const doSend = async () => {
     const t = text.trim();
-    if (!t || sending) return;
+    if ((!t && !pending) || sending) return;
     setSending(true);
     setError("");
+    const att = pending;
     try {
       setText("");
       stopTypingSignal();
-      await sendMessage(activeId, t, replyTo?.id ?? null);
+      setPending(null);
+      const created = await sendMessage(
+        activeId,
+        t,
+        replyTo?.id ?? null,
+        att ? { file: att.file, kind: att.kind } : null
+      );
+      // فرستنده عکس خودش را بی‌درنگ ببیند (مثل تلگرام) — بدون دانلود مجدد از سرور
+      if (att?.kind === "image" && created?.id) {
+        if (objectUrlCache.size > 300) {
+          for (const old of objectUrlCache.values()) URL.revokeObjectURL(old);
+          objectUrlCache.clear();
+        }
+        objectUrlCache.set(created.id, URL.createObjectURL(att.file));
+      }
+      if (att?.url) URL.revokeObjectURL(att.url);
       setReplyTo(null);
     } catch (e) {
       setError(extractError ? extractError(e) : "خطا در ارسال پیام");
       setText(t);
+      setPending(att); // پیوست برای تلاش مجدد سر جایش می‌مانَد
     } finally {
       setSending(false);
     }
@@ -376,7 +662,13 @@ export default function ChatWindow() {
                   {m.reply_to.text}
                 </div>
               )}
-              <p className="whitespace-pre-wrap break-words text-sm leading-6">{m.text}</p>
+              {m.attachment_kind === "image" && (
+                <MediaImage message={m} onOpen={setLightbox} />
+              )}
+              {(m.attachment_kind === "file" || m.attachment_kind === "voice") && (
+                <MediaFile message={m} mine={mine} onDownload={() => doDownload(m)} />
+              )}
+              {m.text && <p className="whitespace-pre-wrap break-words text-sm leading-6">{m.text}</p>}
               <div className={`mt-1 flex items-center gap-1.5 text-[10px] ${mine ? "text-emerald-100" : "text-slate-400"}`}>
                 {isEdited && <span>ویرایش‌شده</span>}
                 <span className="mr-auto flex items-center gap-1">
@@ -550,7 +842,50 @@ export default function ChatWindow() {
           </div>
         )}
 
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
+        {pending && (
+          <div className="mx-auto mb-2 flex max-w-3xl items-center gap-3 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2">
+            {pending.kind === "image" && pending.url ? (
+              <img src={pending.url} alt="" className="h-12 w-12 shrink-0 rounded-lg object-cover" />
+            ) : (
+              <div className="grid h-12 w-12 shrink-0 place-items-center rounded-lg bg-slate-200">
+                <FileIcon className="h-6 w-6 text-slate-500" />
+              </div>
+            )}
+            <div className="min-w-0 flex-1">
+              <div className="truncate text-xs font-medium text-slate-700">{pending.file.name}</div>
+              <div className="text-[11px] text-slate-400">{fmtSize(pending.file.size)}</div>
+            </div>
+            <button
+              onClick={removePending}
+              className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-200"
+              title="حذف پیوست"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        )}
+
+        <div className="mx-auto flex max-w-3xl items-end gap-1.5">
+          <input ref={imageInputRef} type="file" accept="image/*" hidden onChange={pickImage} />
+          <input ref={fileInputRef} type="file" hidden onChange={pickFile} />
+
+          <button
+            onClick={() => imageInputRef.current?.click()}
+            disabled={!!pending || sending}
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-40"
+            title="ارسال تصویر (فشرده می‌شود)"
+          >
+            <ImageIcon className="h-5 w-5" />
+          </button>
+          <button
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!!pending || sending}
+            className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-40"
+            title="ارسال فایل (بدون تغییر)"
+          >
+            <Paperclip className="h-5 w-5" />
+          </button>
+
           <textarea
             rows={1}
             value={text}
@@ -562,7 +897,7 @@ export default function ChatWindow() {
           />
           <button
             onClick={doSend}
-            disabled={!text.trim() || sending}
+            disabled={(!text.trim() && !pending) || sending}
             className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-emerald-600 text-white transition-colors hover:bg-emerald-700 disabled:opacity-40"
             title="ارسال"
           >
@@ -572,6 +907,27 @@ export default function ChatWindow() {
       </div>
 
       {forwarding && <ForwardDialog message={forwarding} onClose={() => setForwarding(null)} />}
+
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/80 p-4"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox}
+            alt=""
+            className="max-h-full max-w-full rounded-lg object-contain"
+            onClick={(e) => e.stopPropagation()}
+          />
+          <button
+            onClick={() => setLightbox(null)}
+            className="absolute left-4 top-4 grid h-10 w-10 place-items-center rounded-full bg-white/10 text-white hover:bg-white/20"
+            title="بستن"
+          >
+            <X className="h-5 w-5" />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

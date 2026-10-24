@@ -5,6 +5,7 @@ import {
   apiCreateConversation,
   apiListMessages,
   apiSendMessage,
+  apiSendMessageWithAttachment,
   apiForwardMessage,
   apiEditMessage,
   apiDeleteMessage,
@@ -298,8 +299,19 @@ const useChatStore = create((set, get) => ({
     }
   },
 
-  sendMessage: async (convId, text, replyToId = null) => {
-    const m = await apiSendMessage(convId, text, replyToId);
+  sendMessage: async (convId, text, replyToId = null, attachment = null) => {
+    let m;
+    if (attachment?.file) {
+      m = await apiSendMessageWithAttachment(convId, {
+        text,
+        replyToId,
+        file: attachment.file,
+        kind: attachment.kind,
+        duration: attachment.duration ?? null,
+      });
+    } else {
+      m = await apiSendMessage(convId, text, replyToId);
+    }
     if (m?.id) {
       set((s) => {
         const messages = { ...s.messages };

@@ -42,6 +42,26 @@ export async function apiSendMessage(conversationId, text, replyToId = null) {
   return unwrap(api.post(`/chat/conversations/${conversationId}/messages/`, body));
 }
 
+export async function apiSendMessageWithAttachment(
+  conversationId,
+  { text, file, kind, duration, replyToId }
+) {
+  const body = new FormData();
+  if (text) body.append("text", text);
+  if (replyToId) body.append("reply_to", String(replyToId));
+  if (kind) body.append("kind", kind);
+  if (duration != null) body.append("duration", String(duration));
+  body.append("attachment", file);
+  // FormData را بدون هدر دستی می‌فرستیم — خودِ axios مرز multipart را می‌سازد
+  return unwrap(api.post(`/chat/conversations/${conversationId}/messages/`, body));
+}
+
+export async function apiDownloadAttachment(messageId) {
+  return unwrap(
+    api.get(`/chat/messages/${messageId}/attachment/`, { responseType: "blob" })
+  );
+}
+
 export async function apiForwardMessage(messageId, conversationId) {
   return unwrap(api.post(`/chat/messages/${messageId}/forward/`, { conversation_id: conversationId }));
 }

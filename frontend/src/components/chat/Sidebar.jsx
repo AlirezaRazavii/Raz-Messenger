@@ -51,7 +51,16 @@ function ConversationItem({ conv, active, onClick }) {
         </div>
         <div className="mt-0.5 flex items-center justify-between gap-2">
           <span className={`truncate text-sm ${unread > 0 ? "font-medium text-slate-700" : "text-slate-400"}`}>
-            {last ? last.text || "…" : "بدون پیام"}
+            {last
+              ? last.text ||
+                (last.attachment_kind === "image"
+                  ? "تصویر"
+                  : last.attachment_kind === "voice"
+                  ? "پیام صوتی"
+                  : last.attachment_kind === "file"
+                  ? "فایل"
+                  : "…")
+              : "بدون پیام"}
           </span>
           {unread > 0 && (
             <span className="min-w-5 shrink-0 rounded-full bg-emerald-600 px-1.5 py-0.5 text-center text-[11px] font-bold text-white">
