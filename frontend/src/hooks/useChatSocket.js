@@ -2,9 +2,11 @@ import { useEffect } from "react";
 import { useAuthStore } from "../store/auth";
 import useChatStore from "../store/chat";
 
-const WS_URL = "ws://127.0.0.1:8000/ws/";
-// در فاز ۷ (استقرار) این آدرس‌ها به متغیر محیطی منتقل می‌شوند
-const API_BASE = "http://127.0.0.1:8000";
+// آدرس‌ها از hostname مرورگر ساخته می‌شوند تا روی PC (localhost) و موبایل (IP شبکه) هر دو کار کنند؛
+// در فاز ۷ (استقرار) به متغیر محیطی منتقل می‌شوند
+const HOST = window.location.hostname;
+const WS_URL = `ws://${HOST}:8000/ws/`;
+const API_BASE = `http://${HOST}:8000`;
 const PING_INTERVAL = 30000;
 const MAX_BACKOFF = 15000;
 

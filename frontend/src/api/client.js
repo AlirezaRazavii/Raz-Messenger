@@ -4,7 +4,7 @@ import { useAuthStore } from '../store/auth'
 
 // در حالت توسعه بک‌اند روی 8000 است؛ در فاز ۷ با هم‌دامنه شدن، به '/api' تغییر می‌کند
 const client = axios.create({
-  baseURL: 'http://127.0.0.1:8000/api',
+  baseURL: `${window.location.protocol}//${window.location.hostname}:8000/api`,
   timeout: 15000,
 })
 

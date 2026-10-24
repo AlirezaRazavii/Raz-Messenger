@@ -30,9 +30,13 @@ load_dotenv(BASE_DIR / ".env")
 SECRET_KEY = os.environ.get("SECRET_KEY", "django-insecure-dev-only")
 REDIS_URL = os.getenv("REDIS_URL", "redis://127.0.0.1:6379/0")
 
+# رسانه — فاز ۳
+MEDIA_ROOT = os.path.join(BASE_DIR, "media")
+CHAT_MAX_UPLOAD_MB = int(os.getenv("CHAT_MAX_UPLOAD_MB", "25"))
+
 DEBUG = os.environ.get("DEBUG", "True") == "True"
 
-ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1").split(",")
+ALLOWED_HOSTS = os.environ.get("ALLOWED_HOSTS", "localhost,127.0.0.1,192.168.1.3").split(",")
 
 
 # Application definition
@@ -182,6 +186,7 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
+    "http://192.168.1.3:5173",
 ]
 
 # --- ایمیل ---
