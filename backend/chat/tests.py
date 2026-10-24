@@ -1,6 +1,13 @@
+import shutil
+import tempfile
+
 from django.contrib.auth import get_user_model
 from rest_framework.test import APITestCase, APIClient
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.core.files.storage import default_storage
+from django.core.files.uploadedfile import SimpleUploadedFile
+from django.test import override_settings
+
 
 from .models import Conversation, Participant, Message
 
@@ -321,3 +328,132 @@ class MessageActionsTests(APITestCase):
             format="json",
         )
         self.assertEqual(res.status_code, 404)
+        
+class MessageMediaTests(APITestCase):
+    """تست‌های پیوست (عکس/فایل/ویس) — فاز ۳-آ"""
+
+    @classmethod
+    def setUpClass(cls):
+        super().setUpClass()
+        # فایل‌های تست نباید در media واقعی پروژه بنشینند
+        cls._tmp_media = tempfile.mkdtemp(prefix="raz_media_tests_")
+        cls._media_override = override_settings(MEDIA_ROOT=cls._tmp_media)
+        cls._media_override.enable()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._media_override.disable()
+        shutil.rmtree(cls._tmp_media, ignore_errors=True)
+        super().tearDownClass()
+
+    def setUp(self):
+        User = get_user_model()
+        self.alice = User.objects.create_user(
+            username="alice", email="alice@example.test", password="Passw0rd!"
+        )
+        self.bob = User.objects.create_user(
+            username="bob", email="bob@example.test", password="Passw0rd!"
+        )
+        self.conv = Conversation.objects.create()
+        Participant.objects.create(conversation=self.conv, user=self.alice)
+        Participant.objects.create(conversation=self.conv, user=self.bob)
+        self.client = APIClient()
+        self.url = f"/api/chat/conversations/{self.conv.id}/messages/"
+
+    def _jpeg(self, name="pic.jpg", size=32):
+        return SimpleUploadedFile(
+            name, b"\xff\xd8\xff\xe0" + b"x" * size, content_type="image/jpeg"
+        )
+
+    def test_send_image_without_text(self):
+        self.client.force_authenticate(self.alice)
+        res = self.client.post(self.url, {"attachment": self._jpeg()}, format="multipart")
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["attachment_kind"], "image")
+        self.assertEqual(res.data["attachment_name"], "pic.jpg")
+        self.assertEqual(res.data["attachment_size"], 36)  # ۴ بایت سرصفحه + ۳۲ بایت
+        self.assertEqual(res.data["text"], "")
+
+    def test_send_requires_text_or_attachment(self):
+        self.client.force_authenticate(self.alice)
+        res = self.client.post(self.url, {}, format="multipart")
+        self.assertEqual(res.status_code, 400)
+
+    def test_upload_size_limit(self):
+        self.client.force_authenticate(self.alice)
+        with override_settings(CHAT_MAX_UPLOAD_MB=0.001):  # حدود ۱ کیلوبایت
+            res = self.client.post(
+                self.url, {"attachment": self._jpeg(size=2048)}, format="multipart"
+            )
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("attachment", res.data)
+
+    def test_voice_message(self):
+        self.client.force_authenticate(self.alice)
+        voice = SimpleUploadedFile("voice.webm", b"WEBMVOICE", content_type="audio/webm")
+        res = self.client.post(
+            self.url,
+            {"attachment": voice, "kind": "voice", "duration": "12"},
+            format="multipart",
+        )
+        self.assertEqual(res.status_code, 201)
+        self.assertEqual(res.data["attachment_kind"], "voice")
+        self.assertEqual(res.data["voice_duration"], 12)
+
+    def test_attachment_download_as_member(self):
+        self.client.force_authenticate(self.alice)
+        res = self.client.post(self.url, {"attachment": self._jpeg()}, format="multipart")
+        res2 = self.client.get(f"/api/chat/messages/{res.data['id']}/attachment/")
+        self.assertEqual(res2.status_code, 200)
+        self.assertIn("image/jpeg", res2["Content-Type"])
+
+    def test_attachment_download_denied_for_stranger(self):
+        self.client.force_authenticate(self.alice)
+        res = self.client.post(self.url, {"attachment": self._jpeg()}, format="multipart")
+        msg_id = res.data["id"]
+        User = get_user_model()
+        stranger = User.objects.create_user(
+            username="eve", email="eve@example.test", password="Passw0rd!"
+        )
+        self.client.force_authenticate(stranger)
+        res2 = self.client.get(f"/api/chat/messages/{msg_id}/attachment/")
+        self.assertEqual(res2.status_code, 404)
+
+    def test_forward_copies_attachment(self):
+        self.client.force_authenticate(self.alice)
+        res = self.client.post(self.url, {"attachment": self._jpeg()}, format="multipart")
+        msg_id = res.data["id"]
+
+        User = get_user_model()
+        carol = User.objects.create_user(
+            username="carol", email="carol@example.test", password="Passw0rd!"
+        )
+        conv2 = Conversation.objects.create()
+        Participant.objects.create(conversation=conv2, user=self.alice)
+        Participant.objects.create(conversation=conv2, user=carol)
+
+        res2 = self.client.post(
+            f"/api/chat/messages/{msg_id}/forward/",
+            {"conversation_id": conv2.id},
+            format="json",
+        )
+        self.assertEqual(res2.status_code, 201)
+        self.assertEqual(res2.data["attachment_kind"], "image")
+        self.assertEqual(res2.data["attachment_name"], "pic.jpg")
+        new_msg = Message.objects.get(id=res2.data["id"])
+        self.assertTrue(default_storage.exists(new_msg.attachment.name))
+        # فایل جدیدِ مستقل — نه ارجاع به فایل پیام مبدأ
+        self.assertNotEqual(
+            new_msg.attachment.name, Message.objects.get(id=msg_id).attachment.name
+        )
+
+    def test_delete_message_removes_attachment_file(self):
+        self.client.force_authenticate(self.alice)
+        res = self.client.post(self.url, {"attachment": self._jpeg()}, format="multipart")
+        msg_id = res.data["id"]
+        path = Message.objects.get(id=msg_id).attachment.name
+        self.assertTrue(default_storage.exists(path))
+
+        res2 = self.client.delete(f"/api/chat/messages/{msg_id}/")
+        self.assertEqual(res2.status_code, 204)
+        self.assertFalse(default_storage.exists(path))

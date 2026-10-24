@@ -18,4 +18,9 @@ urlpatterns = [
         views.MessageForwardView.as_view(),
         name="message-forward",
     ),
+    path(
+        "messages/<int:msg_id>/attachment/",
+        views.MessageAttachmentView.as_view(),
+        name="message-attachment",
+    ),
 ]

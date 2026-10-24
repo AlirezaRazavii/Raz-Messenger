@@ -1,6 +1,11 @@
+import mimetypes
+
+from django.conf import settings
 from django.contrib.auth import get_user_model
+from django.core.files.base import File
 from django.db import transaction
 from django.db.models import OuterRef, Q, Subquery
+from django.http import FileResponse
 from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -15,6 +20,7 @@ User = get_user_model()
 TEXT_MAX_LENGTH = 4096
 HISTORY_PAGE_DEFAULT = 30
 HISTORY_PAGE_MAX = 50
+ATTACHMENT_KINDS = {"image", "file", "voice"}
 
 
 def _get_my_conversation(user, conv_id):
@@ -222,13 +228,43 @@ class MessageListCreateView(APIView):
             return Response({"detail": "گفتگو پیدا نشد."}, status=404)
 
         text = _clean_text(request.data.get("text"))
-        if not text:
-            return Response({"text": ["متن پیام نمی‌تواند خالی باشد."]}, status=400)
         if len(text) > TEXT_MAX_LENGTH:
             return Response(
                 {"text": [f"متن پیام نمی‌تواند بیش از {TEXT_MAX_LENGTH} نویسه باشد."]},
                 status=400,
             )
+
+        # ----- پیوست (اختیاری) — فاز ۳ -----
+        upload = request.FILES.get("attachment")
+        kind = (request.data.get("kind") or "").strip()
+        if upload is not None:
+            max_bytes = settings.CHAT_MAX_UPLOAD_MB * 1024 * 1024
+            if upload.size > max_bytes:
+                return Response(
+                    {
+                        "attachment": [
+                            f"حجم پیوست نمی‌تواند بیش از {settings.CHAT_MAX_UPLOAD_MB} مگابایت باشد."
+                        ]
+                    },
+                    status=400,
+                )
+            if not kind:
+                ctype = (upload.content_type or "").lower()
+                kind = "image" if ctype.startswith("image/") else "file"
+            if kind not in ATTACHMENT_KINDS:
+                return Response({"kind": ["نوع پیوست نامعتبر است."]}, status=400)
+        elif kind:
+            return Response({"attachment": ["فایلی برای این نوع ارسال نشده است."]}, status=400)
+
+        if not text and upload is None:
+            return Response({"text": ["متن پیام نمی‌تواند خالی باشد."]}, status=400)
+
+        voice_duration = None
+        if kind == "voice":
+            try:
+                voice_duration = max(0, min(int(request.data.get("duration") or 0), 7200))
+            except (TypeError, ValueError):
+                voice_duration = None
 
         # پاسخ به پیام (اختیاری) — باید متعلق به همین گفتگو باشد
         reply_to = None
@@ -243,9 +279,16 @@ class MessageListCreateView(APIView):
                 return Response({"reply_to": ["پیام موردنظر در این گفتگو پیدا نشد."]}, status=400)
 
         with transaction.atomic():
-            msg = Message.objects.create(
+            msg = Message(
                 conversation=conv, sender=request.user, text=text, reply_to=reply_to
             )
+            if upload is not None:
+                msg.attachment = upload
+                msg.attachment_kind = kind
+                msg.attachment_name = (upload.name or "file")[:255]
+                msg.attachment_size = upload.size
+                msg.voice_duration = voice_duration
+            msg.save()
             # گفتگو به بالای لیست برود + پیام خودمان طبیعتاً خوانده‌شده است
             conv.save(update_fields=["updated_at"])
             Participant.objects.filter(conversation=conv, user=request.user).update(
@@ -279,13 +322,43 @@ class MessageDetailView(APIView):
             return Response({"detail": "فقط فرستنده می‌تواند پیام را ویرایش کند."}, status=403)
 
         text = _clean_text(request.data.get("text"))
-        if not text:
-            return Response({"text": ["متن پیام نمی‌تواند خالی باشد."]}, status=400)
         if len(text) > TEXT_MAX_LENGTH:
             return Response(
                 {"text": [f"متن پیام نمی‌تواند بیش از {TEXT_MAX_LENGTH} نویسه باشد."]},
                 status=400,
             )
+
+        # ----- پیوست (اختیاری) — فاز ۳ -----
+        upload = request.FILES.get("attachment")
+        kind = (request.data.get("kind") or "").strip()
+        if upload is not None:
+            max_bytes = settings.CHAT_MAX_UPLOAD_MB * 1024 * 1024
+            if upload.size > max_bytes:
+                return Response(
+                    {
+                        "attachment": [
+                            f"حجم پیوست نمی‌تواند بیش از {settings.CHAT_MAX_UPLOAD_MB} مگابایت باشد."
+                        ]
+                    },
+                    status=400,
+                )
+            if not kind:
+                ctype = (upload.content_type or "").lower()
+                kind = "image" if ctype.startswith("image/") else "file"
+            if kind not in ATTACHMENT_KINDS:
+                return Response({"kind": ["نوع پیوست نامعتبر است."]}, status=400)
+        elif kind:
+            return Response({"attachment": ["فایلی برای این نوع ارسال نشده است."]}, status=400)
+
+        if not text and upload is None:
+            return Response({"text": ["متن پیام نمی‌تواند خالی باشد."]}, status=400)
+
+        voice_duration = None
+        if kind == "voice":
+            try:
+                voice_duration = max(0, min(int(request.data.get("duration") or 0), 7200))
+            except (TypeError, ValueError):
+                voice_duration = None
 
         msg.text = text
         msg.edited_at = timezone.now()
@@ -310,6 +383,8 @@ class MessageDetailView(APIView):
 
         conv = msg.conversation
         message_id = msg.id
+        if msg.attachment:
+            msg.attachment.delete(save=False)  # فایل پیوست هم پاک شود
         msg.delete()  # حذف قطعی (تصمیم تأییدشده)
 
         push_to_users(
@@ -339,11 +414,21 @@ class MessageForwardView(APIView):
             return Response({"conversation_id": ["گفتگو مقصد پیدا نشد."]}, status=404)
 
         text = _clean_text(src.text)
-        if not text:
+        # پیام بدون متن هم قابل فوروارد است، به شرطی که پیوست داشته باشد (فاز ۳)
+        if not text and not src.attachment:
             return Response({"detail": "این پیام قابل فوروارد نیست."}, status=400)
 
         with transaction.atomic():
-            msg = Message.objects.create(conversation=target, sender=request.user, text=text)
+            msg = Message(conversation=target, sender=request.user, text=text)
+            if src.attachment:
+                # کپی فیزیکی فایل — پیام فورواردشده باید مستقل از پیام مبدأ باشد
+                with src.attachment.open("rb") as src_file:
+                    msg.attachment.save(src.attachment.name, File(src_file), save=False)
+                msg.attachment_kind = src.attachment_kind
+                msg.attachment_name = src.attachment_name
+                msg.attachment_size = src.attachment_size
+                msg.voice_duration = src.voice_duration
+            msg.save()
             target.save(update_fields=["updated_at"])
             Participant.objects.filter(conversation=target, user=request.user).update(
                 last_read_message_id=msg.id
@@ -358,3 +443,23 @@ class MessageForwardView(APIView):
             {"type": "message.new", "message": MessageSerializer(msg).data},
         )
         return Response(MessageSerializer(msg).data, status=201)
+    
+class MessageAttachmentView(APIView):
+    """دریافت پیوست — فقط اعضای همان گفتگو؛ URL حدسی برای غریبه کار نمی‌کند."""
+
+    def get(self, request, msg_id):
+        msg = (
+            Message.objects.select_related("conversation")
+            .filter(id=msg_id, conversation__participants=request.user)
+            .first()
+        )
+        if msg is None or not msg.attachment:
+            return Response({"detail": "پیام پیدا نشد."}, status=404)
+
+        content_type, _ = mimetypes.guess_type(msg.attachment_name or "")
+        return FileResponse(
+            msg.attachment.open("rb"),
+            content_type=content_type or "application/octet-stream",
+            filename=msg.attachment_name or "file",
+            as_attachment=False,
+        )

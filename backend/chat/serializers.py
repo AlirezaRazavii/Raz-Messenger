@@ -22,4 +22,8 @@ class MessageSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Message
-        fields = ["id", "conversation", "sender", "text", "created_at", "edited_at", "reply_to"]
+        fields = [
+            "id", "conversation", "sender", "text", "created_at", "edited_at",
+            "reply_to", "attachment_kind", "attachment_name", "attachment_size",
+            "voice_duration",
+        ]

@@ -1,5 +1,14 @@
+import os
+import uuid
+
 from django.conf import settings
 from django.db import models
+
+
+def _attachment_upload_to(instance, filename):
+    """مسیر ذخیره پیوست: نام تصادفی + پسوند اصلی — نام اصلی هرگز در مسیر فایل نمی‌نشیند."""
+    ext = os.path.splitext(filename)[1].lower()[:10]
+    return f"attachments/{uuid.uuid4().hex}{ext}"
 
 
 class Conversation(models.Model):
@@ -42,6 +51,23 @@ class Message(models.Model):
         related_name="sent_messages",
     )
     text = models.TextField("متن")
+    attachment = models.FileField(
+        "پیوست",
+        upload_to=_attachment_upload_to,
+        null=True,
+        blank=True,
+        max_length=255,
+    )
+    attachment_kind = models.CharField(
+        "نوع پیوست",
+        max_length=10,
+        choices=[("image", "تصویر"), ("file", "فایل"), ("voice", "ویس")],
+        blank=True,
+        default="",
+    )
+    attachment_name = models.CharField("نام پیوست", max_length=255, blank=True, default="")
+    attachment_size = models.PositiveIntegerField("حجم پیوست (بایت)", null=True, blank=True)
+    voice_duration = models.PositiveIntegerField("مدت ویس (ثانیه)", null=True, blank=True)
     reply_to = models.ForeignKey(
         "self",
         verbose_name="پاسخ به",
