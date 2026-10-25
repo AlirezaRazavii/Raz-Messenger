@@ -10,6 +10,12 @@ import {
   apiEditMessage,
   apiDeleteMessage,
   apiSearchUsers,
+  apiCreateGroup,
+  apiGetGroup,
+  apiRenameGroup,
+  apiDeleteGroup,
+  apiAddGroupMember,
+  apiRemoveGroupMember,
   extractError,
 } from "../api/chat";
 
@@ -44,14 +50,23 @@ const useChatStore = create((set, get) => ({
   conversationsLoading: false,
   activeId: null,
 
+  // جزئیات گروه گفتگوی فعال (اعضا، نقش‌ها، آنلاین‌بودن) — فاز ۴
+  activeGroup: null,
+
   // { [convId]: { list: [], hasMore: false, loading: false } }
   messages: {},
 
   // { [convId]: { [userId]: expiresAtMs } }
   typing: {},
 
-  // { [convId]: message_id } — آخرین پیام خوانده‌شده توسط طرف مقابل (برای فاز ۲-هـ)
+  // { [convId]: message_id } — برای خصوصی: آخرین خوانده‌ی طرف مقابل؛ برای گروه: کمینه‌ی خوانده‌ی اعضا
   readUpTo: {},
+
+  // { [convId]: { [userId]: message_id } } — خوانده‌ی زنده‌ی هر عضو گروه (فاز ۴)
+  groupReads: {},
+
+  // { [convId]: message_id } — کمینه‌ی خوانده‌ی اعضا در آخرین بارگذاری لیست (فاز ۴)
+  groupReadSeed: {},
 
   // ---------------- اتصال ----------------
   setConnected: (v) => set({ connected: v }),
@@ -83,11 +98,14 @@ const useChatStore = create((set, get) => ({
       case "ws.connected": get().setConnected(true); break;
       case "presence": get()._applyPresence(ev.user_id, ev.online); break;
       case "typing": get()._applyTyping(ev.conversation_id, ev.user_id, ev.state); break;
-      case "read": get()._applyRead(ev.conversation_id, ev.message_id ?? ev.last_read_message_id); break;
+      case "read": get()._applyRead(ev.conversation_id, ev.message_id ?? ev.last_read_message_id, ev.user_id); break;
       case "message.new": get()._applyMessageNew(ev.message); break;
       case "message.edited": get()._applyMessageEdited(ev.message); break;
       case "message.deleted": get()._applyMessageDeleted(ev); break;
       case "conversation.new": get()._applyConversationNew(ev); break;
+      case "group.new": get()._applyGroupNew(ev); break;
+      case "group.updated": get()._applyGroupUpdated(ev); break;
+      case "group.deleted": get()._applyGroupDeleted(ev); break;
       default: break;
     }
   },
@@ -123,8 +141,26 @@ const useChatStore = create((set, get) => ({
     });
   },
 
-  _applyRead: (convId, messageId) => {
+  _applyRead: (convId, messageId, userId) => {
     if (!convId || !messageId) return;
+    const conv = get().conversations.find((c) => c.id === convId);
+    if (conv?.group) {
+      // گروه: تیک دوتایی یعنی کمینه‌ی خوانده‌ی اعضا به این پیام رسیده باشد —
+      // محافظه‌کارانه: هرگز جلوتر از min(خوانده‌ی زنده، seed سرور) نمی‌رود
+      set((s) => {
+        const per = { ...(s.groupReads[convId] || {}) };
+        if (userId) per[userId] = Math.max(per[userId] ?? 0, messageId);
+        const vals = Object.values(per);
+        const seed = s.groupReadSeed[convId];
+        const live = vals.length ? Math.min(...vals) : messageId;
+        const value = typeof seed === "number" ? Math.min(seed, live) : live;
+        return {
+          groupReads: { ...s.groupReads, [convId]: per },
+          readUpTo: { ...s.readUpTo, [convId]: value },
+        };
+      });
+      return;
+    }
     set((s) => ({ readUpTo: { ...s.readUpTo, [convId]: messageId } }));
   },
 
@@ -209,20 +245,63 @@ const useChatStore = create((set, get) => ({
     }
   },
 
+  // ---------------- رویدادهای گروهی (فاز ۴) ----------------
+  _applyGroupNew: () => {
+    get().loadConversations();
+  },
+
+  _applyGroupUpdated: (ev) => {
+    // اگر خودم از گروه حذف شده بودم، گفتگو از لیست و صفحه پاک می‌شود
+    if (ev?.reason === "member_removed" && ev.user_id != null && ev.user_id === myId()) {
+      const convId = ev.conversation_id;
+      set((s) => ({
+        conversations: s.conversations.filter((c) => c.id !== convId),
+        activeGroup: null,
+      }));
+      if (get().activeId === convId) get().setActive(null);
+      return;
+    }
+    get().loadConversations();
+    const s = get();
+    if (s.activeGroup && ev.group_id === s.activeGroup.id) {
+      get().loadActiveGroup(s.activeGroup.id);
+    }
+  },
+
+  _applyGroupDeleted: (ev) => {
+    const convId = ev.conversation_id;
+    set((s) => {
+      const messages = { ...s.messages };
+      if (convId != null) delete messages[convId];
+      return {
+        conversations: s.conversations.filter((c) => c.id !== convId),
+        activeGroup: s.activeGroup && s.activeGroup.id === ev.group_id ? null : s.activeGroup,
+        messages,
+      };
+    });
+    if (get().activeId === convId) get().setActive(null);
+  },
+
   // ---------------- اکشن‌های REST ----------------
   loadConversations: async () => {
     set({ conversationsLoading: true });
     try {
       const data = await apiListConversations();
       const list = Array.isArray(data) ? data : data?.results ?? [];
-      // seed تیک خوانده‌شدن از سرور — فقط اگر از مقدار زنده‌ی موجود بزرگ‌تر باشد (رو به جلو)
+      // seed تیک خوانده‌شدن از سرور — خصوصی فقط رو به جلو؛ گروه: set (عضو تازه کمینه را پایین می‌آورد)
       set((s) => {
         const readUpTo = { ...s.readUpTo };
+        const groupReadSeed = { ...s.groupReadSeed };
         for (const c of list) {
           const v = Number(c.other_last_read_id ?? 0) || 0;
-          if (v > (readUpTo[c.id] ?? 0)) readUpTo[c.id] = v;
+          if (c.group) {
+            groupReadSeed[c.id] = v;
+            readUpTo[c.id] = v;
+          } else if (v > (readUpTo[c.id] ?? 0)) {
+            readUpTo[c.id] = v;
+          }
         }
-        return { conversations: list, readUpTo };
+        return { conversations: list, readUpTo, groupReadSeed };
       });
     } catch (e) {
       console.error("خطا در دریافت گفتگوها:", extractError ? extractError(e) : e);
@@ -253,8 +332,18 @@ const useChatStore = create((set, get) => ({
 
   setActive: (convId) => {
     set({ activeId: convId });
-    if (convId == null) return;
+    if (convId == null) {
+      set({ activeGroup: null });
+      return;
+    }
     const s = get();
+    // گفتگوی گروهی → جزئیات گروه (اعضا و نقش‌ها) لود شود
+    const conv = s.conversations.find((c) => c.id === convId);
+    if (conv?.group?.id) {
+      get().loadActiveGroup(conv.group.id);
+    } else {
+      set({ activeGroup: null });
+    }
     // صفر کردن شمارنده نخوانده
     set((st) => ({
       conversations: st.conversations.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c)),
@@ -267,6 +356,69 @@ const useChatStore = create((set, get) => ({
       if (last) get().markRead(convId, last.id);
     }
   },
+
+  // ---------------- گروه‌ها (فاز ۴) ----------------
+  loadActiveGroup: async (groupId) => {
+    try {
+      const g = await apiGetGroup(groupId);
+      set({ activeGroup: g });
+    } catch (e) {
+      console.error("خطا در دریافت گروه:", extractError ? extractError(e) : e);
+      set({ activeGroup: null });
+    }
+  },
+
+  createGroup: async (name, members = []) => {
+    const g = await apiCreateGroup(name, members);
+    await get().loadConversations();
+    if (g?.conversation_id) get().setActive(g.conversation_id);
+    return g;
+  },
+
+  renameGroup: async (groupId, name) => {
+    const g = await apiRenameGroup(groupId, name);
+    set({ activeGroup: g });
+    await get().loadConversations();
+    return g;
+  },
+
+  addGroupMember: async (groupId, username) => {
+    const member = await apiAddGroupMember(groupId, username);
+    try {
+      const g = await apiGetGroup(groupId);
+      set({ activeGroup: g });
+    } catch {}
+    await get().loadConversations();
+    return member;
+  },
+
+  removeGroupMember: async (groupId, userId) => {
+    await apiRemoveGroupMember(groupId, userId);
+    if (userId === myId()) {
+      // خروج خودم از گروه — گفتگو بسته و از لیست حذف می‌شود
+      set({ activeGroup: null });
+      get().setActive(null);
+      await get().loadConversations();
+      return true;
+    }
+    try {
+      const g = await apiGetGroup(groupId);
+      set({ activeGroup: g });
+    } catch {}
+    await get().loadConversations();
+    return true;
+  },
+
+  deleteGroup: async (groupId) => {
+    const convId = get().activeGroup?.conversation_id ?? null;
+    await apiDeleteGroup(groupId);
+    set({ activeGroup: null });
+    if (convId) get().setActive(null);
+    await get().loadConversations();
+    return true;
+  },
+
+  setActiveGroup: (g) => set({ activeGroup: g }),
 
   loadMessages: async (convId, { before, reset = false } = {}) => {
     set((s) => {

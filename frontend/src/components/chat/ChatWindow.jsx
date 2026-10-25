@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowRight, Check, CheckCheck, Copy, Download, File as FileIcon, Forward,
-  Image as ImageIcon, Loader2, Mic, MoreHorizontal, Paperclip, Pencil, Play,
-  Reply, SendHorizonal, Trash2, X,
+  ArrowRight, Check, CheckCheck, Copy, Crown, Download, File as FileIcon, Forward,
+  Image as ImageIcon, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Play,
+  Reply, SendHorizonal, Trash2, Users, UserPlus, X,
 } from "lucide-react";
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
@@ -84,7 +84,6 @@ function lastSeenText(iso) {
 }
 
 // فشرده‌سازی عکس سمت کلاینت — پهنای حداکثر ۱۶۰۰، کیفیت ۰٫۸۵
-// گیف دست نمی‌خورد (انیمیشن خراب می‌شود) و اگر نتیجه بزرگ‌تر شد، فایل اصلی می‌ماند
 function compressImage(file, maxDim = 1600, quality = 0.85) {
   if (!file.type.startsWith("image/") || file.type === "image/gif") return Promise.resolve(file);
   if (file.size < 300 * 1024) return Promise.resolve(file); // عکس کوچک: لازم نیست
@@ -132,8 +131,7 @@ function compressImage(file, maxDim = 1600, quality = 0.85) {
   });
 }
 
-// حباب تصویر — «دانلود دل‌خواه» مثل تلگرام: تا کاربر دکمه را نزند هیچ درخواستی به سرور نمی‌رود.
-// بعد از دانلود، نشانی blob در کش می‌ماند تا جابه‌جایی بین گفتگوها دوباره دانلود نکند (تا رفرش صفحه).
+// حباب تصویر — «دانلود دل‌خواه» مثل تلگرام
 function MediaImage({ message, onOpen }) {
   const [url, setUrl] = useState(objectUrlCache.get(message.id) ?? null);
   const [downloading, setDownloading] = useState(false);
@@ -203,7 +201,7 @@ function MediaImage({ message, onOpen }) {
   );
 }
 
-// حباب فایل/ویس — دانلود/پخش فقط با کلیک کاربر؛ ویس بعد از دریافت با <audio> پخش می‌شود
+// حباب فایل/ویس — دانلود/پخش فقط با کلیک کاربر
 function MediaFile({ message, mine, onDownload }) {
   const isVoice = message.attachment_kind === "voice";
   const [audioUrl, setAudioUrl] = useState(objectUrlCache.get(message.id) ?? null);
@@ -346,23 +344,322 @@ function ForwardDialog({ message, onClose }) {
             <div className="py-6 text-center text-sm text-slate-400">گفتگوی دیگری وجود ندارد</div>
           )}
           <div className="max-h-72 overflow-y-auto">
-            {conversations.map((c) => (
-              <button
-                key={c.id}
-                onClick={() => pick(c)}
-                disabled={busyId != null}
-                className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-right hover:bg-slate-50 disabled:opacity-50"
-              >
-                <div className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-600">
-                  {initial(c.other_user?.username)}
+            {conversations.map((c) => {
+              const isGroup = Boolean(c.group);
+              return (
+                <button
+                  key={c.id}
+                  onClick={() => pick(c)}
+                  disabled={busyId != null}
+                  className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-right hover:bg-slate-50 disabled:opacity-50"
+                >
+                  <div
+                    className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-bold ${
+                      isGroup ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"
+                    }`}
+                  >
+                    {isGroup ? <Users className="h-4 w-4" /> : initial(c.other_user?.username)}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium text-slate-700">
+                      {c.group?.name || c.other_user?.username || "گفتگو"}
+                    </div>
+                    <div className="truncate text-xs text-slate-400">
+                      {isGroup && c.last_message?.sender_username
+                        ? `${c.last_message.sender_username}: ${c.last_message?.text ?? ""}`
+                        : c.last_message?.text ?? "بدون پیام"}
+                    </div>
+                  </div>
+                  {busyId === c.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-emerald-600" />}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// پنل اعضای گروه — تغییر نام، افزودن/حذف عضو، خروج، حذف گروه (فاز ۴)
+function GroupMembersDialog({ onClose }) {
+  const group = useChatStore((s) => s.activeGroup);
+  const loadActiveGroup = useChatStore((s) => s.loadActiveGroup);
+  const renameGroup = useChatStore((s) => s.renameGroup);
+  const addGroupMember = useChatStore((s) => s.addGroupMember);
+  const removeGroupMember = useChatStore((s) => s.removeGroupMember);
+  const deleteGroup = useChatStore((s) => s.deleteGroup);
+  const searchUsers = useChatStore((s) => s.searchUsers);
+  const myId = useAuthStore((s) => s.user?.id ?? s.userId ?? null);
+
+  const [renaming, setRenaming] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [addQ, setAddQ] = useState("");
+  const [addResults, setAddResults] = useState([]);
+  const [adding, setAdding] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const myRole = group?.my_role ?? "";
+  const canManage = myRole === "owner" || myRole === "admin";
+
+  // تازه‌سازی اعضا و وضعیت آنلاین هنگام باز شدن پنل
+  useEffect(() => {
+    if (group?.id) loadActiveGroup(group.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    const term = addQ.trim();
+    if (!term || !canManage) {
+      setAddResults([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const users = await searchUsers(term);
+        const memberIds = new Set((group?.members ?? []).map((m) => m.id));
+        setAddResults((users ?? []).filter((u) => !memberIds.has(u.id)));
+      } catch {
+        setAddResults([]);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [addQ, group, canManage, searchUsers]);
+
+  if (!group) return null;
+
+  const doRename = async () => {
+    const n = newName.trim();
+    if (!n || busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      await renameGroup(group.id, n);
+      setRenaming(false);
+    } catch (e) {
+      setError(extractError ? extractError(e) : "خطا در تغییر نام گروه");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doAdd = async (username) => {
+    if (adding || busy) return;
+    setAdding(true);
+    setError("");
+    try {
+      await addGroupMember(group.id, username);
+      setAddQ("");
+      setAddResults([]);
+    } catch (e) {
+      setError(extractError ? extractError(e) : "خطا در افزودن عضو");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const doRemove = async (m) => {
+    if (busy) return;
+    if (!window.confirm(`«${m.username}» از گروه حذف شود؟`)) return;
+    setBusy(true);
+    setError("");
+    try {
+      await removeGroupMember(group.id, m.id);
+    } catch (e) {
+      setError(extractError ? extractError(e) : "خطا در حذف عضو");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const doLeave = async () => {
+    if (busy) return;
+    if (!window.confirm("از این گروه خارج می‌شوی؟")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await removeGroupMember(group.id, myId);
+      onClose(); // گفتگو بسته و از لیست حذف می‌شود
+    } catch (e) {
+      setError(extractError ? extractError(e) : "خطا در خروج از گروه");
+      setBusy(false);
+    }
+  };
+
+  const doDelete = async () => {
+    if (busy) return;
+    if (!window.confirm("گروه برای همه‌ی اعضا حذف شود؟ این کار برگشت ندارد.")) return;
+    setBusy(true);
+    setError("");
+    try {
+      await deleteGroup(group.id);
+      onClose();
+    } catch (e) {
+      setError(extractError ? extractError(e) : "خطا در حذف گروه");
+      setBusy(false);
+    }
+  };
+
+  // قواعد حذف عضو — قرینه‌ی بک‌اند
+  const canRemove = (m) => {
+    if (m.id === myId) return false;
+    if (m.role === "owner") return false;
+    if (myRole === "owner") return true;
+    if (myRole === "admin") return m.role === "member";
+    return false;
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+          <div className="flex min-w-0 items-center gap-2">
+            <Users className="h-5 w-5 shrink-0 text-emerald-600" />
+            {renaming ? (
+              <div className="flex min-w-0 flex-1 items-center gap-1.5">
+                <input
+                  autoFocus
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") doRename();
+                    if (e.key === "Escape") setRenaming(false);
+                  }}
+                  className="min-w-0 flex-1 rounded-lg bg-slate-100 px-2 py-1 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40"
+                />
+                <button onClick={doRename} disabled={busy} className="rounded-lg bg-emerald-600 px-2 py-1 text-xs font-bold text-white hover:bg-emerald-700 disabled:opacity-50">
+                  ثبت
+                </button>
+                <button onClick={() => setRenaming(false)} className="rounded-lg bg-slate-100 px-2 py-1 text-xs text-slate-600 hover:bg-slate-200">
+                  لغو
+                </button>
+              </div>
+            ) : (
+              <>
+                <span className="min-w-0 truncate font-bold text-slate-800">{group.name}</span>
+                {canManage && (
+                  <button
+                    onClick={() => {
+                      setNewName(group.name);
+                      setRenaming(true);
+                    }}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                    title="تغییر نام گروه"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </>
+            )}
+          </div>
+          <button onClick={onClose} className="grid h-8 w-8 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-slate-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="border-b border-slate-100 bg-slate-50 px-4 py-1.5 text-xs text-slate-500">
+          {group.members?.length ?? 0} عضو
+          {myRole === "owner" && " — تو سازنده‌ی گروهی"}
+          {myRole === "admin" && " — تو مداری"}
+        </div>
+
+        <div className="p-2">
+          {error && <div className="m-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
+
+          <div className="max-h-72 overflow-y-auto">
+            {(group.members ?? []).map((m) => (
+              <div key={m.id} className="flex items-center gap-3 rounded-xl px-2 py-2 hover:bg-slate-50">
+                <div className="relative shrink-0">
+                  <div className="grid h-9 w-9 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-600">
+                    {initial(m.username)}
+                  </div>
+                  <span
+                    className={`absolute bottom-0 left-0 h-2.5 w-2.5 rounded-full border-2 border-white ${
+                      m.online ? "bg-emerald-500" : "bg-slate-300"
+                    }`}
+                  />
                 </div>
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-slate-700">{c.other_user?.username}</div>
-                  <div className="truncate text-xs text-slate-400">{c.last_message?.text ?? "بدون پیام"}</div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="truncate text-sm font-medium text-slate-700">
+                      {m.username}
+                      {m.id === myId && <span className="text-slate-400"> (تو)</span>}
+                    </span>
+                    {m.role === "owner" && <Crown className="h-3.5 w-3.5 shrink-0 text-amber-500" title="سازنده گروه" />}
+                    {m.role === "admin" && (
+                      <span className="shrink-0 rounded bg-emerald-100 px-1.5 text-[10px] font-bold text-emerald-700">مدیر</span>
+                    )}
+                  </div>
                 </div>
-                {busyId === c.id && <Loader2 className="h-4 w-4 shrink-0 animate-spin text-emerald-600" />}
-              </button>
+                {canRemove(m) && (
+                  <button
+                    onClick={() => doRemove(m)}
+                    disabled={busy}
+                    className="grid h-7 w-7 shrink-0 place-items-center rounded-lg text-slate-400 hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                    title="حذف از گروه"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+                )}
+              </div>
             ))}
+          </div>
+
+          {canManage && (
+            <div className="mt-2 border-t border-slate-100 pt-2">
+              <div className="flex items-center gap-2 rounded-xl bg-slate-100 px-3 py-1.5">
+                <UserPlus className="h-4 w-4 shrink-0 text-slate-400" />
+                <input
+                  value={addQ}
+                  onChange={(e) => setAddQ(e.target.value)}
+                  placeholder="افزودن عضو با نام کاربری…"
+                  className="min-w-0 flex-1 bg-transparent text-sm outline-none"
+                />
+                {adding && <Loader2 className="h-4 w-4 animate-spin text-emerald-600" />}
+              </div>
+              {addResults.length > 0 && (
+                <div className="mt-1 max-h-32 overflow-y-auto">
+                  {addResults.map((u) => (
+                    <button
+                      key={u.id}
+                      onClick={() => doAdd(u.username)}
+                      disabled={adding}
+                      className="flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-right hover:bg-slate-50 disabled:opacity-50"
+                    >
+                      <div className="grid h-7 w-7 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600">
+                        {initial(u.username)}
+                      </div>
+                      <span className="truncate text-sm text-slate-700">{u.username}</span>
+                      <UserPlus className="mr-auto h-4 w-4 shrink-0 text-emerald-600" />
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <div className="mt-3 flex gap-2 border-t border-slate-100 pt-3">
+            {myRole !== "owner" && (
+              <button
+                onClick={doLeave}
+                disabled={busy}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-slate-100 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-50"
+              >
+                <LogOut className="h-3.5 w-3.5" />
+                خروج از گروه
+              </button>
+            )}
+            {myRole === "owner" && (
+              <button
+                onClick={doDelete}
+                disabled={busy}
+                className="flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-red-50 py-2 text-xs font-bold text-red-600 hover:bg-red-100 disabled:opacity-50"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                حذف گروه
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -376,6 +673,7 @@ export default function ChatWindow() {
   const bucket = useChatStore((s) => s.messages[s.activeId] ?? EMPTY_BUCKET);
   const typingMap = useChatStore((s) => s.typing[s.activeId]);
   const readUpTo = useChatStore((s) => s.readUpTo[s.activeId] ?? 0);
+  const activeGroup = useChatStore((s) => s.activeGroup);
   const myId = useAuthStore((s) => s.user?.id ?? s.userId ?? null);
 
   const setActive = useChatStore((s) => s.setActive);
@@ -396,9 +694,10 @@ export default function ChatWindow() {
   const [forwarding, setForwarding] = useState(null);
   const [pending, setPending] = useState(null); // { file, kind, url }
   const [lightbox, setLightbox] = useState(null);
+  const [membersOpen, setMembersOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recSecs, setRecSecs] = useState(0);
-  const [, setTick] = useState(0);
+  const [tick, setTick] = useState(0);
 
   const scrollRef = useRef(null);
   const stickBottom = useRef(true);
@@ -416,10 +715,28 @@ export default function ChatWindow() {
   const discardRef = useRef(false);
 
   const other = conv?.other_user ?? {};
+  const isGroup = Boolean(conv?.group);
+  const groupName = activeGroup?.name ?? conv?.group?.name ?? "گروه";
+  const memberCount = activeGroup?.member_count ?? conv?.group?.member_count ?? null;
 
   const otherTyping = Object.entries(typingMap ?? {}).some(
     ([uid, until]) => Number(uid) !== myId && until > Date.now()
   );
+
+  // نام تایپ‌کننده‌های گروه — هر ثانیه تازه می‌شود (تیک) تا TTLها منقضی شوند
+  const typingNames = useMemo(() => {
+    if (!typingMap) return [];
+    const now = Date.now();
+    const members = activeGroup?.members ?? [];
+    const names = [];
+    for (const [uid, until] of Object.entries(typingMap)) {
+      if (until <= now) continue;
+      if (myId != null && Number(uid) === myId) continue;
+      names.push(members.find((m) => m.id === Number(uid))?.username ?? "عضو گروه");
+    }
+    return names;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [typingMap, activeGroup, myId, tick]);
 
   useEffect(() => {
     if (!typingMap || Object.keys(typingMap).length === 0) return;
@@ -436,6 +753,7 @@ export default function ChatWindow() {
     setReplyTo(null);
     setForwarding(null);
     setError("");
+    setMembersOpen(false);
     if (pending?.url) URL.revokeObjectURL(pending.url);
     setPending(null);
     cancelVoiceRecording(); // ضبط نیمه‌تمام هنگام تغییر گفتگو دور ریخته می‌شود
@@ -828,6 +1146,11 @@ export default function ChatWindow() {
             </div>
           ) : (
             <>
+              {isGroup && !mine && (
+                <div className="mb-0.5 text-[11px] font-bold text-emerald-700">
+                  {m.sender?.username ?? "کاربر"}
+                </div>
+              )}
               {m.reply_to && (
                 <div
                   className={`mb-1.5 truncate rounded-lg border-r-2 px-2 py-1 text-[11px] leading-5 ${
@@ -931,9 +1254,18 @@ export default function ChatWindow() {
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-slate-50">
       {/* هدر گفتگو */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-3 py-2.5">
+      <div
+        onClick={isGroup ? () => setMembersOpen(true) : undefined}
+        title={isGroup ? "دیدن اعضای گروه" : undefined}
+        className={`flex shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-3 py-2.5 ${
+          isGroup ? "cursor-pointer hover:bg-slate-50" : ""
+        }`}
+      >
         <button
-          onClick={() => setActive(null)}
+          onClick={(e) => {
+            e.stopPropagation();
+            setActive(null);
+          }}
           className="grid h-9 w-9 place-items-center rounded-xl text-slate-500 hover:bg-slate-100 md:hidden"
           title="بازگشت"
         >
@@ -941,21 +1273,33 @@ export default function ChatWindow() {
         </button>
 
         <div className="relative shrink-0">
-          <div className="grid h-10 w-10 place-items-center rounded-full bg-slate-200 font-bold text-slate-600">
-            {initial(other.username)}
-          </div>
-          <span
-            className={`absolute bottom-0 left-0 h-3 w-3 rounded-full border-2 border-white ${
-              other.online ? "bg-emerald-500" : "bg-slate-300"
+          <div
+            className={`grid h-10 w-10 place-items-center rounded-full font-bold ${
+              isGroup ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"
             }`}
-          />
+          >
+            {isGroup ? <Users className="h-5 w-5" /> : initial(other.username)}
+          </div>
+          {!isGroup && (
+            <span
+              className={`absolute bottom-0 left-0 h-3 w-3 rounded-full border-2 border-white ${
+                other.online ? "bg-emerald-500" : "bg-slate-300"
+              }`}
+            />
+          )}
         </div>
 
         <div className="min-w-0 flex-1 leading-tight">
-          <div className="truncate font-bold text-slate-800">{other.username ?? "کاربر"}</div>
-          <div className="h-4 text-xs text-slate-500">
-            {otherTyping ? (
-              <span className="font-medium text-emerald-600">در حال نوشتن…</span>
+          <div className="truncate font-bold text-slate-800">
+            {isGroup ? groupName : (other.username ?? "کاربر")}
+          </div>
+          <div className="h-4 truncate text-xs text-slate-500">
+            {typingNames.length > 0 ? (
+              <span className="font-medium text-emerald-600">
+                {isGroup ? `${typingNames.join("، ")} در حال نوشتن…` : "در حال نوشتن…"}
+              </span>
+            ) : isGroup ? (
+              `${memberCount ?? "…"} عضو`
             ) : other.online ? (
               "متصل"
             ) : (
@@ -963,6 +1307,19 @@ export default function ChatWindow() {
             )}
           </div>
         </div>
+
+        {isGroup && (
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              setMembersOpen(true);
+            }}
+            className="grid h-9 w-9 shrink-0 place-items-center rounded-xl text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+            title="اعضا"
+          >
+            <Users className="h-5 w-5" />
+          </button>
+        )}
       </div>
 
       {/* ناحیه پیام‌ها */}
@@ -1132,6 +1489,7 @@ export default function ChatWindow() {
       </div>
 
       {forwarding && <ForwardDialog message={forwarding} onClose={() => setForwarding(null)} />}
+      {membersOpen && <GroupMembersDialog onClose={() => setMembersOpen(false)} />}
 
       {lightbox && (
         <div

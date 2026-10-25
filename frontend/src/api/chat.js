@@ -35,7 +35,6 @@ export async function apiListMessages(conversationId, { before, limit } = {}) {
   return unwrap(api.get(`/chat/conversations/${conversationId}/messages/${query}`));
 }
 
-
 export async function apiSendMessage(conversationId, text, replyToId = null) {
   const body = { text };
   if (replyToId) body.reply_to = replyToId;
@@ -76,4 +75,31 @@ export async function apiDeleteMessage(messageId) {
 
 export async function apiSearchUsers(q) {
   return unwrap(api.get("/chat/users/", { params: { q } }));
+}
+
+// ---------- گروه‌ها (فاز ۴) ----------
+
+export async function apiCreateGroup(name, members = []) {
+  return unwrap(api.post("/chat/groups/", { name, members }));
+}
+
+export async function apiGetGroup(groupId) {
+  return unwrap(api.get(`/chat/groups/${groupId}/`));
+}
+
+export async function apiRenameGroup(groupId, name) {
+  return unwrap(api.patch(`/chat/groups/${groupId}/`, { name }));
+}
+
+export async function apiDeleteGroup(groupId) {
+  return unwrap(api.delete(`/chat/groups/${groupId}/`));
+}
+
+export async function apiAddGroupMember(groupId, username) {
+  return unwrap(api.post(`/chat/groups/${groupId}/members/`, { username }));
+}
+
+// خروج خود از گروه هم با همین است — userId = شناسه خودم
+export async function apiRemoveGroupMember(groupId, userId) {
+  return unwrap(api.delete(`/chat/groups/${groupId}/members/${userId}/`));
 }
