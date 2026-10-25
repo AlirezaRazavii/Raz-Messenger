@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowRight, Check, CheckCheck, Copy, Download, File as FileIcon, Forward,
-  Image as ImageIcon, Loader2, MoreHorizontal, Paperclip, Pencil, Play,
+  Image as ImageIcon, Loader2, Mic, MoreHorizontal, Paperclip, Pencil, Play,
   Reply, SendHorizonal, Trash2, X,
 } from "lucide-react";
 import useChatStore from "../../store/chat";
@@ -10,8 +10,9 @@ import { extractError, apiDownloadAttachment } from "../../api/chat";
 
 const EMPTY_BUCKET = { list: [], hasMore: false, loading: false };
 const MAX_UPLOAD_MB = 25;
+const MAX_VOICE_SEC = 300; // حداکثر ۵ دقیقه برای هر ویس
 
-// کش نشانی‌های blob تصاویر — دوباره‌فچر نشود وقتی حباب دوباره رندر می‌شود
+// کش نشانی‌های blob تصاویر و ویس‌ها — دوباره فچر نشود وقتی حباب دوباره رندر می‌شود
 const objectUrlCache = new Map();
 
 function initial(name) {
@@ -32,6 +33,14 @@ function fmtSize(bytes) {
   if (bytes < 1024) return `${bytes} بایت`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} کیلوبایت`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} مگابایت`;
+}
+
+// تایمر ضبط ویس: 0:07 یا 1:23
+function fmtRecTime(sec) {
+  sec = Math.max(0, Math.floor(sec));
+  const m = Math.floor(sec / 60);
+  const s = sec % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
 function dayKey(iso) {
@@ -194,7 +203,7 @@ function MediaImage({ message, onOpen }) {
   );
 }
 
-// حباب فایل/ویس — دانلود/پخش فقط با کلیک کاربر؛ ویس بعد از دریافت با <audio> پخش می‌شود (ضبط در ۳-ج)
+// حباب فایل/ویس — دانلود/پخش فقط با کلیک کاربر؛ ویس بعد از دریافت با <audio> پخش می‌شود
 function MediaFile({ message, mine, onDownload }) {
   const isVoice = message.attachment_kind === "voice";
   const [audioUrl, setAudioUrl] = useState(objectUrlCache.get(message.id) ?? null);
@@ -220,7 +229,25 @@ function MediaFile({ message, mine, onDownload }) {
 
   if (isVoice) {
     if (audioUrl) {
-      return <audio controls src={audioUrl} preload="none" className="mb-1 h-9 w-60" />;
+      return (
+        <audio
+          controls
+          src={audioUrl}
+          preload="none"
+          onLoadedMetadata={(e) => {
+            // کروم برای webm مدت را اول Infinity نشان می‌دهد — این ترفند آن را درست می‌کند
+            const a = e.currentTarget;
+            if (a.duration === Infinity || Number.isNaN(a.duration)) {
+              a.currentTime = 1e101;
+              a.ontimeupdate = () => {
+                a.ontimeupdate = null;
+                a.currentTime = 0;
+              };
+            }
+          }}
+          className="mb-1 h-9 w-60"
+        />
+      );
     }
     return (
       <div className={`mb-1 flex min-w-[220px] items-center gap-3 rounded-xl p-2.5 ${mine ? "bg-white/15" : "bg-slate-100"}`}>
@@ -369,6 +396,8 @@ export default function ChatWindow() {
   const [forwarding, setForwarding] = useState(null);
   const [pending, setPending] = useState(null); // { file, kind, url }
   const [lightbox, setLightbox] = useState(null);
+  const [recording, setRecording] = useState(false);
+  const [recSecs, setRecSecs] = useState(0);
   const [, setTick] = useState(0);
 
   const scrollRef = useRef(null);
@@ -377,6 +406,14 @@ export default function ChatWindow() {
   const lastTypingSent = useRef(0);
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // ضبط ویس
+  const mediaRecorderRef = useRef(null);
+  const recStreamRef = useRef(null);
+  const chunksRef = useRef([]);
+  const recStartRef = useRef(0);
+  const recTimerRef = useRef(null);
+  const discardRef = useRef(false);
 
   const other = conv?.other_user ?? {};
 
@@ -401,8 +438,25 @@ export default function ChatWindow() {
     setError("");
     if (pending?.url) URL.revokeObjectURL(pending.url);
     setPending(null);
+    cancelVoiceRecording(); // ضبط نیمه‌تمام هنگام تغییر گفتگو دور ریخته می‌شود
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
+
+  // توقف کامل ضبط هنگام بسته شدن صفحه
+  useEffect(() => {
+    return () => {
+      if (recTimerRef.current) clearInterval(recTimerRef.current);
+      const rec = mediaRecorderRef.current;
+      if (rec && rec.state !== "inactive") {
+        try {
+          rec.stop();
+        } catch {}
+      }
+      if (recStreamRef.current) {
+        recStreamRef.current.getTracks().forEach((t) => t.stop());
+      }
+    };
+  }, []);
 
   // مدیریت اسکرول
   useEffect(() => {
@@ -481,6 +535,131 @@ export default function ChatWindow() {
     setPending(null);
   };
 
+  // ---------- ضبط ویس (فاز ۳-ج) ----------
+  const pickVoiceMime = () => {
+    if (typeof MediaRecorder === "undefined") return "";
+    const candidates = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+    for (const c of candidates) {
+      try {
+        if (MediaRecorder.isTypeSupported(c)) return c;
+      } catch {}
+    }
+    return "";
+  };
+
+  // توقف ضبط: discard=true یعنی دور انداخته شود
+  const stopRec = (discard) => {
+    const rec = mediaRecorderRef.current;
+    if (!rec || rec.state === "inactive") return;
+    discardRef.current = discard;
+    try {
+      rec.stop();
+    } catch {}
+  };
+
+  const stopVoiceRecording = () => stopRec(false);
+  const cancelVoiceRecording = () => stopRec(true);
+
+  const startVoiceRecording = async () => {
+    if (recording || sending || pending) return;
+    setError("");
+    if (!navigator.mediaDevices?.getUserMedia || typeof MediaRecorder === "undefined") {
+      setError(
+        window.isSecureContext
+          ? "این مرورگر از ضبط صدا پشتیبانی نمی‌کند."
+          : "میکروفون فقط روی localhost یا https کار می‌کند. فعلاً از خودِ کامپیوتر ویس بفرست."
+      );
+      return;
+    }
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setError("دسترسی به میکروفون رد شد.");
+      return;
+    }
+    const mime = pickVoiceMime();
+    let rec;
+    try {
+      rec = new MediaRecorder(stream, mime ? { mimeType: mime, audioBitsPerSecond: 32000 } : undefined);
+    } catch {
+      stream.getTracks().forEach((t) => t.stop());
+      setError("راه‌اندازی ضبط صدا در این مرورگر ممکن نشد.");
+      return;
+    }
+
+    chunksRef.current = [];
+    discardRef.current = false;
+    recStartRef.current = Date.now();
+    mediaRecorderRef.current = rec;
+    recStreamRef.current = stream;
+
+    rec.ondataavailable = (e) => {
+      if (e.data && e.data.size > 0) chunksRef.current.push(e.data);
+    };
+
+    rec.onstop = async () => {
+      if (recTimerRef.current) {
+        clearInterval(recTimerRef.current);
+        recTimerRef.current = null;
+      }
+      const secs = Math.max(1, Math.round((Date.now() - recStartRef.current) / 1000));
+      if (recStreamRef.current) {
+        recStreamRef.current.getTracks().forEach((t) => t.stop());
+        recStreamRef.current = null;
+      }
+      const discarded = discardRef.current;
+      discardRef.current = false;
+      const chunks = chunksRef.current;
+      chunksRef.current = [];
+      setRecording(false);
+      setRecSecs(0);
+      if (discarded || chunks.length === 0) return;
+
+      const type = mime || "audio/webm";
+      const ext = type.includes("mp4") ? "m4a" : type.includes("ogg") ? "ogg" : "webm";
+      const blob = new Blob(chunks, { type });
+      const file = new File([blob], `voice-${Date.now()}.${ext}`, { type });
+      setSending(true);
+      try {
+        const created = await sendMessage(
+          activeId,
+          "",
+          replyTo?.id ?? null,
+          { file, kind: "voice", duration: secs }
+        );
+        setReplyTo(null);
+        // فرستنده بتواند ویس خودش را بی‌درنگ پخش کند — بدون دانلود مجدد از سرور
+        if (created?.id) {
+          if (objectUrlCache.size > 300) {
+            for (const old of objectUrlCache.values()) URL.revokeObjectURL(old);
+            objectUrlCache.clear();
+          }
+          objectUrlCache.set(created.id, URL.createObjectURL(blob));
+        }
+      } catch (e) {
+        setError(extractError ? extractError(e) : "خطا در ارسال پیام صوتی");
+      } finally {
+        setSending(false);
+      }
+    };
+
+    try {
+      rec.start(250);
+    } catch {
+      stream.getTracks().forEach((t) => t.stop());
+      setError("شروع ضبط ممکن نشد.");
+      return;
+    }
+    setRecSecs(0);
+    setRecording(true);
+    recTimerRef.current = setInterval(() => {
+      const elapsed = (Date.now() - recStartRef.current) / 1000;
+      setRecSecs(elapsed);
+      if (Math.floor(elapsed) >= MAX_VOICE_SEC) stopRec(false); // توقف خودکار در سقف مجاز
+    }, 250);
+  };
+
   const doDownload = async (m) => {
     setError("");
     try {
@@ -528,7 +707,7 @@ export default function ChatWindow() {
 
   const doSend = async () => {
     const t = text.trim();
-    if ((!t && !pending) || sending) return;
+    if (recording || (!t && !pending) || sending) return;
     setSending(true);
     setError("");
     const att = pending;
@@ -865,45 +1044,91 @@ export default function ChatWindow() {
           </div>
         )}
 
-        <div className="mx-auto flex max-w-3xl items-end gap-1.5">
-          <input ref={imageInputRef} type="file" accept="image/*" hidden onChange={pickImage} />
-          <input ref={fileInputRef} type="file" hidden onChange={pickFile} />
+        {recording ? (
+          <div className="mx-auto flex max-w-3xl items-center gap-2">
+            <button
+              onClick={cancelVoiceRecording}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-red-500 transition-colors hover:bg-red-50"
+              title="دور انداختن ضبط"
+            >
+              <Trash2 className="h-5 w-5" />
+            </button>
+            <div className="flex min-h-[44px] flex-1 items-center gap-3 rounded-2xl bg-red-50 px-4 py-2">
+              <span className="relative flex h-3 w-3 shrink-0">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-red-400 opacity-75" />
+                <span className="relative inline-flex h-3 w-3 rounded-full bg-red-500" />
+              </span>
+              <span className="shrink-0 text-sm font-bold tabular-nums text-red-700">
+                {fmtRecTime(recSecs)}
+              </span>
+              <div className="flex h-5 flex-1 items-center gap-1 overflow-hidden" aria-hidden="true">
+                {Array.from({ length: 28 }).map((_, i) => (
+                  <span
+                    key={i}
+                    className="w-1 shrink-0 rounded-full bg-red-300"
+                    style={{ height: `${4 + ((i * 5 + Math.floor(recSecs * 4)) % 15)}px` }}
+                  />
+                ))}
+              </div>
+              <span className="shrink-0 text-[11px] text-red-400">حداکثر {MAX_VOICE_SEC / 60} دقیقه</span>
+            </div>
+            <button
+              onClick={stopVoiceRecording}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-emerald-600 text-white transition-colors hover:bg-emerald-700"
+              title="ارسال ویس"
+            >
+              <SendHorizonal className="h-5 w-5 -scale-x-100" />
+            </button>
+          </div>
+        ) : (
+          <div className="mx-auto flex max-w-3xl items-end gap-1.5">
+            <input ref={imageInputRef} type="file" accept="image/*" hidden onChange={pickImage} />
+            <input ref={fileInputRef} type="file" hidden onChange={pickFile} />
 
-          <button
-            onClick={() => imageInputRef.current?.click()}
-            disabled={!!pending || sending}
-            className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-40"
-            title="ارسال تصویر (فشرده می‌شود)"
-          >
-            <ImageIcon className="h-5 w-5" />
-          </button>
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            disabled={!!pending || sending}
-            className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-40"
-            title="ارسال فایل (بدون تغییر)"
-          >
-            <Paperclip className="h-5 w-5" />
-          </button>
+            <button
+              onClick={() => imageInputRef.current?.click()}
+              disabled={!!pending || sending}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-40"
+              title="ارسال تصویر (فشرده می‌شود)"
+            >
+              <ImageIcon className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!!pending || sending}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-40"
+              title="ارسال فایل (بدون تغییر)"
+            >
+              <Paperclip className="h-5 w-5" />
+            </button>
+            <button
+              onClick={startVoiceRecording}
+              disabled={!!pending || sending}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full text-slate-500 transition-colors hover:bg-slate-100 disabled:opacity-40"
+              title="ضبط پیام صوتی"
+            >
+              <Mic className="h-5 w-5" />
+            </button>
 
-          <textarea
-            rows={1}
-            value={text}
-            onChange={onTextChange}
-            onKeyDown={onKeyDown}
-            onBlur={stopTypingSignal}
-            placeholder="پیام خود را بنویسید…"
-            className="max-h-32 min-h-[44px] flex-1 resize-none rounded-2xl bg-slate-100 px-4 py-2.5 text-sm leading-6 outline-none focus:ring-2 focus:ring-emerald-500/40"
-          />
-          <button
-            onClick={doSend}
-            disabled={(!text.trim() && !pending) || sending}
-            className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-emerald-600 text-white transition-colors hover:bg-emerald-700 disabled:opacity-40"
-            title="ارسال"
-          >
-            {sending ? <Loader2 className="h-5 w-5 animate-spin" /> : <SendHorizonal className="h-5 w-5 -scale-x-100" />}
-          </button>
-        </div>
+            <textarea
+              rows={1}
+              value={text}
+              onChange={onTextChange}
+              onKeyDown={onKeyDown}
+              onBlur={stopTypingSignal}
+              placeholder="پیام خود را بنویسید…"
+              className="max-h-32 min-h-[44px] flex-1 resize-none rounded-2xl bg-slate-100 px-4 py-2.5 text-sm leading-6 outline-none focus:ring-2 focus:ring-emerald-500/40"
+            />
+            <button
+              onClick={doSend}
+              disabled={(!text.trim() && !pending) || sending}
+              className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-emerald-600 text-white transition-colors hover:bg-emerald-700 disabled:opacity-40"
+              title="ارسال"
+            >
+              {sending ? <Loader2 className="h-5 w-5 animate-spin" /> : <SendHorizonal className="h-5 w-5 -scale-x-100" />}
+            </button>
+          </div>
+        )}
       </div>
 
       {forwarding && <ForwardDialog message={forwarding} onClose={() => setForwarding(null)} />}
