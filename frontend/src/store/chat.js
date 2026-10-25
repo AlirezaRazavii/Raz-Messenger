@@ -330,7 +330,7 @@ const useChatStore = create((set, get) => ({
     return conv;
   },
 
-  setActive: (convId) => {
+    setActive: (convId) => {
     set({ activeId: convId });
     if (convId == null) {
       set({ activeGroup: null });
@@ -348,13 +348,9 @@ const useChatStore = create((set, get) => ({
     set((st) => ({
       conversations: st.conversations.map((c) => (c.id === convId ? { ...c, unread_count: 0 } : c)),
     }));
-    if (!s.messages[convId]) {
-      get().loadMessages(convId, { reset: true });
-    } else {
-      const list = s.messages[convId].list;
-      const last = list[list.length - 1];
-      if (last) get().markRead(convId, last.id);
-    }
+    // همیشه از سرور تازه می‌گیریم: کشِ کهنه هم پیام‌های تازه را پنهان می‌کرد،
+    // هم تیک خوانده‌شدن را با شناسه‌ی کهنه می‌فرستاد و سرور آن را نادیده می‌گرفت
+    get().loadMessages(convId, { reset: true });
   },
 
   // ---------------- گروه‌ها (فاز ۴) ----------------
