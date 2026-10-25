@@ -8,7 +8,9 @@
 """
 import asyncio
 import json
+import os
 import urllib.request
+from pathlib import Path
 
 import websockets
 
@@ -17,10 +19,20 @@ WS_BASE = "ws://127.0.0.1:8000/ws/"
 WS_ORIGIN = "http://127.0.0.1:8000"
 LISTEN_SECONDS = 300  # مدت ماندن اتصال‌ها (۵ دقیقه)
 
-# ⚠️ همان یوزرنیم/رمزهایی که بالای ws_test.py نوشته‌ای، اینجا هم بگذار
+# رمزها از backend/.env خوانده می‌شوند (WS_PASS_1 / WS_PASS_2) — دیگر در کد نیستند
+_env_file = Path(__file__).resolve().parent.parent / ".env"
+try:
+    with open(_env_file, encoding="utf-8") as f:
+        for _line in f:
+            _line = _line.strip()
+            if _line and not _line.startswith("#") and "=" in _line:
+                _key, _, _val = _line.partition("=")
+                os.environ.setdefault(_key.strip(), _val.strip())
+except FileNotFoundError:
+    pass
 USERS = [
-    ("alireza", "alireza", "1274554756qW#rahimi"),
-    ("testuser", "testuser", "1274554756qW#"),
+    ("alireza", "alireza", os.getenv("WS_PASS_1", "")),
+    ("testuser", "testuser", os.getenv("WS_PASS_2", "")),
 ]
 
 
