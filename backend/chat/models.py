@@ -12,7 +12,7 @@ def _attachment_upload_to(instance, filename):
 
 
 class Conversation(models.Model):
-    """گفتگو — فعلاً خصوصی بین دو نفر؛ گروه‌ها در فاز ۴ روی همین مدل ساخته می‌شوند."""
+    """گفتگو — خصوصی بین دو نفر، یا کادر گفتگوی یک گروه (فاز ۴)."""
 
     participants = models.ManyToManyField(
         settings.AUTH_USER_MODEL,
@@ -22,7 +22,7 @@ class Conversation(models.Model):
     )
     title = models.CharField(
         "عنوان", max_length=128, blank=True, default=""
-    )  # فقط برای گروه‌ها در فاز ۴
+    )  # برای گروه‌ها از Group.name استفاده می‌شود
     created_at = models.DateTimeField("تاریخ ساخت", auto_now_add=True)
     updated_at = models.DateTimeField(
         "آخرین فعالیت", auto_now=True
@@ -35,6 +35,35 @@ class Conversation(models.Model):
 
     def __str__(self):
         return f"گفتگو {self.id}"
+
+
+class Group(models.Model):
+    """گروه — روی گفتگوی خودش سوار است؛ اعضا همان Participantهای گفتگو (با فیلد role)."""
+
+    conversation = models.OneToOneField(
+        Conversation,
+        verbose_name="گفتگو",
+        on_delete=models.CASCADE,
+        related_name="group",
+    )
+    name = models.CharField("نام گروه", max_length=128)
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        verbose_name="سازنده",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="created_groups",
+    )
+    created_at = models.DateTimeField("تاریخ ساخت", auto_now_add=True)
+
+    class Meta:
+        verbose_name = "گروه"
+        verbose_name_plural = "گروه‌ها"
+        ordering = ["-conversation__updated_at"]
+
+    def __str__(self):
+        return self.name
 
 
 class Message(models.Model):
@@ -89,8 +118,15 @@ class Message(models.Model):
         return f"{self.sender} در {self.conversation}: {self.text[:30]}"
 
 
+GROUP_ROLE_CHOICES = [
+    ("owner", "مالک"),
+    ("admin", "مدیر"),
+    ("member", "عضو"),
+]
+
+
 class Participant(models.Model):
-    """عضویت کاربر در گفتگو — last_read_message مبنای شمارش نخوانده‌ها و تیک خوانده‌شدن است."""
+    """عضویت کاربر در گفتگو — نقش فقط برای گفتگوهای گروهی معنا دارد."""
 
     conversation = models.ForeignKey(
         Conversation,
@@ -112,6 +148,13 @@ class Participant(models.Model):
         null=True,
         blank=True,
         related_name="read_by",
+    )
+    role = models.CharField(
+        "نقش در گروه",
+        max_length=10,
+        choices=GROUP_ROLE_CHOICES,
+        blank=True,
+        default="",
     )
 
     class Meta:
