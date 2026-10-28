@@ -103,3 +103,9 @@ export async function apiAddGroupMember(groupId, username) {
 export async function apiRemoveGroupMember(groupId, userId) {
   return unwrap(api.delete(`/chat/groups/${groupId}/members/${userId}/`));
 }
+
+// ---------- تماس‌ها (فاز ۵، بسته ۱) ----------
+
+export async function apiListCalls() {
+  return unwrap(api.get("/chat/calls/"));
+}

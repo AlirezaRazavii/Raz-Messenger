@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight, Check, CheckCheck, Copy, Crown, Download, File as FileIcon, Forward,
-  Image as ImageIcon, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Phone, Play,
+  Image as ImageIcon, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Phone, PhoneCall,
+  PhoneIncoming, PhoneMissed, PhoneOutgoing, Play,
   Reply, SendHorizonal, Trash2, Users, UserPlus, Video, X,
 } from "lucide-react";
 import useChatStore from "../../store/chat";
@@ -71,6 +72,49 @@ function DaySeparator({ label }) {
       <span className="rounded-full bg-slate-200/70 px-3 py-1 text-[11px] font-medium text-slate-500">
         {label}
       </span>
+    </div>
+  );
+}
+
+function callStatusText(status) {
+  const map = {
+    answered: "پاسخ داده شد",
+    missed: "بی‌پاسخ",
+    rejected: "رد شد",
+    cancelled: "لغو شد",
+    busy: "مشغول بود",
+  };
+  return map[status] || "تماس";
+}
+
+function fmtCallDur(sec) {
+  sec = Math.max(0, Math.floor(sec || 0));
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+// ردیف سیستمی تماس — مثل تلگرام وسط چت؛ کلیک روی آن = تماس مجدد
+function CallRow({ message, mine, onRedial }) {
+  const call = message.call ?? {};
+  const answered = call.status === "answered";
+  const Icon = answered ? PhoneCall : mine ? PhoneOutgoing : PhoneIncoming;
+  const label =
+    `${call.call_type === "video" ? "تماس تصویری" : "تماس صوتی"} · ${callStatusText(call.status)}` +
+    (answered && call.duration > 0 ? ` · ${fmtCallDur(call.duration)}` : "");
+
+  return (
+    <div className="my-1.5 flex justify-center">
+      <button
+        onClick={onRedial}
+        title="تماس مجدد"
+        className={`flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs transition-colors hover:bg-slate-100 ${
+          answered ? "text-slate-500" : "text-red-500"
+        }`}
+      >
+        <Icon className={`h-3.5 w-3.5 ${answered ? "text-emerald-600" : ""}`} />
+        <span className="font-medium">{label}</span>
+        <span className="text-slate-300">·</span>
+        <span className="text-slate-400">{fmtTime(message.created_at ?? message.created)}</span>
+      </button>
     </div>
   );
 }
@@ -1102,6 +1146,16 @@ export default function ChatWindow() {
 
   const renderBubble = (m) => {
     const mine = (typeof m.sender === "number" ? m.sender : m.sender?.id) === myId;
+    // ردیف سیستمی تماس — حباب ندارد؛ وسط چت نشان داده می‌شود
+    if (m.kind === "call") {
+      return (
+        <CallRow
+          message={m}
+          mine={mine}
+          onRedial={() => conv && startCall(conv, m.call?.call_type === "video" ? "video" : "audio")}
+        />
+      );
+    }
     const isEditing = editing?.id === m.id;
     const isEdited = Boolean(m.edited_at ?? m.edited);
 

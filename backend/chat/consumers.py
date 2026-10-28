@@ -2,6 +2,7 @@ import time
 
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
+from django.utils import timezone
 
 from . import callstate, presence
 from .push import user_group
@@ -128,6 +129,8 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         others = [m for m in member_ids if m != self.user.id]
 
         if kind == "offer":
+            # گزارش تماس ساخته می‌شود؛ وضعیت نهایی بعداً با answer/reject/hangup تعیین می‌شود
+            await self._create_call_log(conversation_id, others, signal.get("call_type", "audio"))
             # زنگ روی سرور ذخیره می‌شود تا اگر کاربر در پنجره‌ی ۴۵ ثانیه وارد
             # شد یا سوکتش وصلِ مجدد شد، تماس از سرور دوباره به او برسد
             for member_id in others:
@@ -149,6 +152,11 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             # اول همه‌ی دستگاه‌های خودِ پاسخ‌دهنده زنگشان خاموش شود، بعد به
             # تماس‌گیرنده برسد
             await callstate.mark_settled(self.user.id, conversation_id, kind)
+            # گزارش تماس (بسته ۱): جواب یا رد روی تماسِ همین گفتگو ثبت می‌شود
+            if kind == "answer":
+                await self._mark_call_answered(conversation_id)
+            else:
+                await self._finalize_call(conversation_id, "rejected")
             await self.channel_layer.group_send(
                 self.group_name,
                 {
@@ -179,11 +187,110 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             await callstate.clear(self.user.id, conversation_id)
             for member_id in others:
                 await callstate.clear(member_id, conversation_id)
+            # گزارش تماس: تایمرِ بی‌پاسخ → «بی‌پاسخ»؛ قطع عمدی → «لغو» یا پایان مکالمه
+            if signal.get("stage") == "ringing":
+                await self._finalize_call(conversation_id, "missed")
+            else:
+                await self._finalize_call(conversation_id, "hangup")
             await self._relay_call(others, conversation_id, signal)
             return
 
-        # بقیه‌ی سیگنال‌ها (مثل ice و busy)
+        if kind == "busy":
+            await self._finalize_call(conversation_id, "busy")
+            await self._relay_call(others, conversation_id, signal)
+            return
+
+        # بقیه‌ی سیگنال‌ها (مثل ice)
         await self._relay_call(others, conversation_id, signal)
+
+    # ---------- گزارش تماس (فاز ۵، بسته ۱) ----------
+
+    async def _create_call_log(self, conversation_id, callee_ids, call_type):
+        await self._db_create_call_log(conversation_id, self.user.id, callee_ids, call_type)
+
+    @database_sync_to_async
+    def _db_create_call_log(self, conversation_id, caller_id, callee_ids, call_type):
+        from .models import CallLog
+
+        callee_id = callee_ids[0] if callee_ids else None
+        if callee_id is None:
+            return
+        # تماس قبلیِ همین گفتگو که «در زنگ» مانده و هرگز نهایی نشده → بی‌پاسخ
+        CallLog.objects.filter(conversation_id=conversation_id, status="ringing").update(
+            status="missed", ended_at=timezone.now()
+        )
+        CallLog.objects.create(
+            conversation_id=conversation_id,
+            caller_id=caller_id,
+            callee_id=callee_id,
+            call_type="video" if call_type == "video" else "audio",
+        )
+
+    async def _mark_call_answered(self, conversation_id):
+        await self._db_mark_call_answered(conversation_id)
+
+    @database_sync_to_async
+    def _db_mark_call_answered(self, conversation_id):
+        from .models import CallLog
+
+        log = CallLog.objects.filter(
+            conversation_id=conversation_id, status="ringing"
+        ).order_by("-id").first()
+        if log:
+            log.status = "answered"
+            log.answered_at = timezone.now()
+            log.save(update_fields=["status", "answered_at"])
+
+    async def _finalize_call(self, conversation_id, status):
+        """نهایی‌کردن گزارش تماس + ساخت ردیف سیستمی تماس داخل خود چت."""
+        message_data = await self._db_finalize_call(conversation_id, status)
+        if not message_data:
+            return
+        payload = {"type": "message.new", "message": message_data}
+        for member_id in await self._member_ids(conversation_id):
+            await self.channel_layer.group_send(
+                user_group(member_id), {"type": "chat.event", "payload": payload}
+            )
+
+    @database_sync_to_async
+    def _db_finalize_call(self, conversation_id, status):
+        from .models import CallLog, Message
+        from .serializers import MessageSerializer
+
+        log = CallLog.objects.filter(
+            conversation_id=conversation_id, status__in=("ringing", "answered")
+        ).order_by("-id").first()
+        if log is None:
+            return None
+
+        now = timezone.now()
+        if log.status == "answered":
+            # مکالمه‌ی برقرارشده — فقط پایانش ثبت می‌شود و فقط یک بار
+            if log.ended_at is not None:
+                return None
+            log.ended_at = now
+            log.save(update_fields=["ended_at"])
+        else:
+            # هنوز جواب داده نشده — وضعیت نهایی همین‌جا معلوم می‌شود
+            final = status if status in ("missed", "rejected", "cancelled", "busy") else "cancelled"
+            log.status = final
+            log.ended_at = now
+            log.save(update_fields=["status", "ended_at"])
+
+        # ردیف سیستمی داخل چت (مثل تلگرام) — فرستنده = تماس‌گیرنده
+        msg = Message.objects.create(
+            conversation_id=conversation_id,
+            sender_id=log.caller_id,
+            text="",
+            kind="call",
+            call_log=log,
+        )
+        log.conversation.save(update_fields=["updated_at"])  # گفتگو در سایدبار بالا بیاید
+
+        msg = Message.objects.select_related(
+            "sender", "call_log", "call_log__caller", "reply_to", "reply_to__sender"
+        ).get(pk=msg.pk)
+        return MessageSerializer(msg).data
 
     async def _relay_call(self, member_ids, conversation_id, signal):
         """ارسال سیگنال تماس به اعضای داده‌شده."""

@@ -10,7 +10,7 @@ from django.utils import timezone
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
-from .models import Conversation, Group, Message, Participant
+from .models import CallLog, Conversation, Group, Message, Participant
 from .presence import get_presence
 from .push import push_to_users
 from .serializers import MessageSerializer
@@ -86,7 +86,7 @@ def _serialize_conversations(user, conversations):
     last_msg_by_conv = {}
     msg_ids = [c.last_message_id for c in convs if c.last_message_id]
     if msg_ids:
-        for m in Message.objects.filter(id__in=msg_ids).select_related("sender"):
+        for m in Message.objects.filter(id__in=msg_ids).select_related("sender", "call_log"):
             last_msg_by_conv[m.conversation_id] = m
 
     presence = get_presence([u.id for u in other_by_conv.values()])
@@ -108,6 +108,16 @@ def _serialize_conversations(user, conversations):
                 "sender_id": lm.sender_id,
                 "sender_username": lm.sender.username,
                 "created_at": lm.created_at,
+                "kind": lm.kind,
+                "call": (
+                    {
+                        "status": lm.call_log.status,
+                        "call_type": lm.call_log.call_type,
+                        "duration": lm.call_log.duration,
+                    }
+                    if lm.kind == "call" and lm.call_log
+                    else None
+                ),
             }
             if lm
             else None
@@ -771,3 +781,38 @@ class MessageAttachmentView(APIView):
             filename=msg.attachment_name or "file",
             as_attachment=False,
         )
+        
+class CallLogListView(APIView):
+    """پنل «تماس‌های اخیر» — گزارش تماس‌هایی که با من بوده (فاز ۵، بسته ۱)."""
+
+    def get(self, request):
+        logs = list(
+            CallLog.objects.filter(Q(caller=request.user) | Q(callee=request.user))
+            .select_related("caller", "callee")
+            .order_by("-id")[:50]
+        )
+        peer_ids = {l.caller_id for l in logs} | {l.callee_id for l in logs}
+        peer_ids.discard(request.user.id)
+        presence = get_presence(list(peer_ids))
+
+        data = []
+        for log in logs:
+            peer = log.callee if log.caller_id == request.user.id else log.caller
+            pres = presence.get(peer.id, {}) if peer else {}
+            data.append(
+                {
+                    "id": log.id,
+                    "conversation_id": log.conversation_id,
+                    "peer": {
+                        "id": peer.id,
+                        "username": peer.username,
+                        "online": pres.get("online", False),
+                    },
+                    "outgoing": log.caller_id == request.user.id,
+                    "call_type": log.call_type,
+                    "status": log.status,
+                    "duration": log.duration,
+                    "created_at": log.started_at,
+                }
+            )
+        return Response(data)

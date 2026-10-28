@@ -108,6 +108,23 @@ class Message(models.Model):
     created_at = models.DateTimeField("زمان ارسال", auto_now_add=True)
     edited_at = models.DateTimeField("زمان ویرایش", null=True, blank=True)
 
+    # فاز ۵ (بسته ۱) — ردیف سیستمی تماس داخل چت
+    kind = models.CharField(
+        "نوع ردیف",
+        max_length=10,
+        choices=[("text", "پیام"), ("call", "تماس")],
+        blank=True,
+        default="text",
+    )
+    call_log = models.ForeignKey(
+        "CallLog",
+        verbose_name="گزارش تماس",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="messages",
+    )
+
     class Meta:
         verbose_name = "پیام"
         verbose_name_plural = "پیام‌ها"
@@ -166,3 +183,55 @@ class Participant(models.Model):
                 name="unique_user_conversation",
             )
         ]
+        
+class CallLog(models.Model):
+    """گزارش هر تماس — تاریخچه‌ی تماس‌ها (فاز ۵، بسته ۱)."""
+
+    CALL_TYPE_CHOICES = [("audio", "صوتی"), ("video", "تصویری")]
+    STATUS_CHOICES = [
+        ("ringing", "در حال زنگ"),
+        ("answered", "پاسخ داده شد"),
+        ("missed", "بی‌پاسخ"),
+        ("rejected", "رد شد"),
+        ("cancelled", "لغو شد"),
+        ("busy", "مشغول بود"),
+    ]
+
+    conversation = models.ForeignKey(
+        Conversation,
+        verbose_name="گفتگو",
+        on_delete=models.CASCADE,
+        related_name="call_logs",
+    )
+    caller = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        verbose_name="تماس‌گیرنده",
+        on_delete=models.CASCADE,
+        related_name="calls_made",
+    )
+    callee = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        verbose_name="گیرنده",
+        on_delete=models.CASCADE,
+        related_name="calls_received",
+    )
+    call_type = models.CharField("نوع تماس", max_length=10, choices=CALL_TYPE_CHOICES, default="audio")
+    status = models.CharField("وضعیت", max_length=10, choices=STATUS_CHOICES, default="ringing")
+    started_at = models.DateTimeField("شروع", auto_now_add=True)
+    answered_at = models.DateTimeField("لحظه‌ی پاسخ", null=True, blank=True)
+    ended_at = models.DateTimeField("لحظه‌ی پایان", null=True, blank=True)
+
+    class Meta:
+        verbose_name = "گزارش تماس"
+        verbose_name_plural = "گزارش تماس‌ها"
+        ordering = ["-id"]
+
+    def __str__(self):
+        return f"تماس {self.get_call_type_display()} ({self.get_status_display()}) — گفتگو {self.conversation_id}"
+
+    @property
+    def duration(self):
+        """مدت مکالمه‌ی برقرارشده به ثانیه — ۰ اگر جواب داده نشد."""
+        if self.answered_at and self.ended_at:
+            return max(0, int((self.ended_at - self.answered_at).total_seconds()))
+        return 0

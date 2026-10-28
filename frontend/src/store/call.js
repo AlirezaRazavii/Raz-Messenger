@@ -286,7 +286,8 @@ const useCallStore = create((set, get) => ({
       startRingTimer(() => {
         // محافظ: اگر جواب آمده و تماس جریان دارد، این تایمر دیگر معتبر نیست
         if (get().status !== "calling") return;
-        get()._send({ kind: "hangup" });
+        // stage=ringing یعنی «بی‌پاسخ» — سرور گزارش تماس را همین ثبت می‌کند
+        get()._send({ kind: "hangup", stage: "ringing" });
         get()._finish("پاسخی داده نشد.");
       });
     } catch {
@@ -385,7 +386,8 @@ const useCallStore = create((set, get) => ({
       if (st.status === "idle" || st.status === "ended") return;
       get()._finish(
         st.status === "calling" ? "پاسخی داده نشد."
-        : st.status === "incoming" ? "تماس توسط تماس‌گیرنده لغو شد."
+        : st.status === "incoming"
+        ? signal.stage === "ringing" ? "تماس بی‌پاسخ ماند." : "تماس توسط تماس‌گیرنده لغو شد."
         : "تماس توسط طرف مقابل قطع شد."
       );
       return;

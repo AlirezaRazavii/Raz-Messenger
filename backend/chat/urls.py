@@ -23,6 +23,9 @@ urlpatterns = [
         views.MessageAttachmentView.as_view(),
         name="message-attachment",
     ),
+    # فاز ۵ (بسته ۱) — تاریخچه‌ی تماس‌ها
+    path("calls/", views.CallLogListView.as_view(), name="call-logs"),
+
     # فاز ۴ — گروه‌ها
     path("groups/", views.GroupListCreateView.as_view(), name="group-list"),
     path("groups/<int:group_id>/", views.GroupDetailView.as_view(), name="group-detail"),

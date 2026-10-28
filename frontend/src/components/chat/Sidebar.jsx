@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Plus, Search, UserPlus, Users, X } from "lucide-react";
+import { Check, History, PhoneIncoming, PhoneOutgoing, Plus, Search, UserPlus, Users, X } from "lucide-react";
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
-import { extractError } from "../../api/chat";
+import { apiListCalls, extractError } from "../../api/chat";
 
 function initial(name) {
   return (name || "؟").trim().charAt(0).toUpperCase();
@@ -21,6 +21,24 @@ function convTitle(conv) {
   return conv.group?.name || conv.other_user?.username || "گفتگو";
 }
 
+function callStatusText(status) {
+  const map = {
+    answered: "پاسخ داده شد",
+    missed: "بی‌پاسخ",
+    rejected: "رد شد",
+    cancelled: "لغو شد",
+    busy: "مشغول بود",
+  };
+  return map[status] || "تماس";
+}
+
+// پیش‌نمایش تماس در آیتم گفتگو — «تماس صوتی · بی‌پاسخ»
+function callPreview(call) {
+  const base = call?.call_type === "video" ? "تماس تصویری" : "تماس صوتی";
+  if (call?.status && call.status !== "answered") return `${base} · ${callStatusText(call.status)}`;
+  return base;
+}
+
 function ConversationItem({ conv, active, onClick }) {
   const isGroup = Boolean(conv.group);
   const other = conv.other_user ?? {};
@@ -30,7 +48,9 @@ function ConversationItem({ conv, active, onClick }) {
   const me = useAuthStore((s) => s.user?.id ?? s.userId ?? null);
 
   const preview = last
-    ? (isGroup && last.sender_id !== me && last.sender_username
+    ? last.kind === "call"
+      ? callPreview(last.call)
+      : (isGroup && last.sender_id !== me && last.sender_username
         ? `${last.sender_username}: `
         : "") +
       (last.text ||
@@ -344,6 +364,106 @@ function NewGroupDialog({ onClose }) {
   );
 }
 
+// پنل «تماس‌های اخیر» — از دکمه‌ی تاریخِ بالای سایدبار باز می‌شود
+function CallsPanel({ onClose }) {
+  const [calls, setCalls] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const setActive = useChatStore((s) => s.setActive);
+
+  useEffect(() => {
+    let dead = false;
+    (async () => {
+      try {
+        const list = await apiListCalls();
+        if (!dead) setCalls(Array.isArray(list) ? list : list?.results ?? []);
+      } catch (e) {
+        if (!dead) setError(extractError ? extractError(e) : "خطا در دریافت تماس‌ها");
+      } finally {
+        if (!dead) setLoading(false);
+      }
+    })();
+    return () => {
+      dead = true;
+    };
+  }, []);
+
+  const fmtWhen = (iso) => {
+    try {
+      const d = new Date(iso);
+      const today = new Date();
+      const yest = new Date();
+      yest.setDate(today.getDate() - 1);
+      const same = (a, b) =>
+        a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+      const time = d.toLocaleTimeString("fa-IR", { hour: "2-digit", minute: "2-digit" });
+      if (same(d, today)) return time;
+      if (same(d, yest)) return `دیروز، ${time}`;
+      return `${d.toLocaleDateString("fa-IR", { day: "numeric", month: "short" })}، ${time}`;
+    } catch {
+      return "";
+    }
+  };
+
+  const fmtDur = (sec) => {
+    sec = Math.max(0, Math.floor(sec || 0));
+    return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 p-4" onClick={onClose}>
+      <div className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3">
+          <div className="flex items-center gap-2 font-bold text-slate-800">
+            <History className="h-5 w-5 text-emerald-600" />
+            تماس‌های اخیر
+          </div>
+          <button onClick={onClose} className="grid h-8 w-8 place-items-center rounded-lg text-slate-400 hover:bg-slate-100">
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+
+        <div className="max-h-96 overflow-y-auto p-2">
+          {loading && <div className="py-8 text-center text-sm text-slate-400">در حال دریافت…</div>}
+          {error && <div className="m-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
+          {!loading && !error && (calls?.length ?? 0) === 0 && (
+            <div className="py-8 text-center text-sm text-slate-400">هنوز تماسی نداشته‌اید</div>
+          )}
+          {(calls ?? []).map((c) => {
+            const ok = c.status === "answered";
+            const DirIcon = c.outgoing ? PhoneOutgoing : PhoneIncoming;
+            return (
+              <button
+                key={c.id}
+                onClick={() => {
+                  onClose();
+                  setActive(c.conversation_id);
+                }}
+                className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-right transition-colors hover:bg-slate-50"
+              >
+                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-600">
+                  {initial(c.peer?.username)}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-sm font-medium text-slate-800">{c.peer?.username ?? "کاربر"}</div>
+                  <div className={`mt-0.5 flex items-center gap-1 text-xs ${ok ? "text-slate-400" : "text-red-500"}`}>
+                    <DirIcon className="h-3.5 w-3.5" />
+                    <span>
+                      {c.call_type === "video" ? "تصویری" : "صوتی"} · {callStatusText(c.status)}
+                      {ok && c.duration > 0 ? ` · ${fmtDur(c.duration)}` : ""}
+                    </span>
+                  </div>
+                </div>
+                <span className="shrink-0 text-[11px] text-slate-400">{fmtWhen(c.created_at)}</span>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function Sidebar() {
   const conversations = useChatStore((s) => s.conversations);
   const activeId = useChatStore((s) => s.activeId);
@@ -353,6 +473,7 @@ export default function Sidebar() {
   const [filter, setFilter] = useState("");
   const [chatDialogOpen, setChatDialogOpen] = useState(false);
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [callsOpen, setCallsOpen] = useState(false);
 
   const list = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -372,6 +493,13 @@ export default function Sidebar() {
             className="w-full rounded-xl bg-slate-100 py-2 pl-3 pr-9 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40"
           />
         </div>
+        <button
+          onClick={() => setCallsOpen(true)}
+          title="تماس‌های اخیر"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200"
+        >
+          <History className="h-5 w-5" />
+        </button>
         <button
           onClick={() => setGroupDialogOpen(true)}
           title="گروه جدید"
@@ -427,6 +555,7 @@ export default function Sidebar() {
 
       {chatDialogOpen && <NewChatDialog onClose={() => setChatDialogOpen(false)} />}
       {groupDialogOpen && <NewGroupDialog onClose={() => setGroupDialogOpen(false)} />}
+      {callsOpen && <CallsPanel onClose={() => setCallsOpen(false)} />}
     </div>
   );
 }
