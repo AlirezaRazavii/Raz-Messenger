@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowRight, Check, CheckCheck, Copy, Crown, Download, File as FileIcon, Forward,
+  ArrowRight, Check, CheckCheck, ChevronDown, Copy, Crown, Download, File as FileIcon, Forward,
   Image as ImageIcon, ListChecks, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Phone, PhoneCall,
   PhoneIncoming, PhoneMissed, PhoneOutgoing, Play,
   Reply, SendHorizonal, Trash2, Users, UserPlus, Video, X,
@@ -746,6 +746,10 @@ export default function ChatWindow() {
   const [recSecs, setRecSecs] = useState(0);
   const [tick, setTick] = useState(0);
 
+  // فلش پرش به پایین: نمایش وقتی کاربر بالای چت است + تعداد پیام تازه‌ی پایین‌تر
+  const [showJumpDown, setShowJumpDown] = useState(false);
+  const [newBelow, setNewBelow] = useState(0);
+
   // حالت انتخاب پیام‌ها + پرش به پیامِ پاسخ‌داده‌شده
   const [selecting, setSelecting] = useState(false);
   const [selected, setSelected] = useState({}); // { [messageId]: true }
@@ -755,6 +759,8 @@ export default function ChatWindow() {
   const scrollRef = useRef(null);
   const stickBottom = useRef(true);
   const restoreRef = useRef(null);
+  const lastConvRef = useRef(null);
+  const lastIdRef = useRef(0);
   const lastTypingSent = useRef(0);
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
@@ -853,6 +859,8 @@ export default function ChatWindow() {
     setSelecting(false);
     setSelected({});
     setJumpTo(null);
+    setShowJumpDown(false);
+    setNewBelow(0);
     suppressClick.current = false;
     touchRef.current = null;
     clearPressTimer();
@@ -894,10 +902,38 @@ export default function ChatWindow() {
     }
   }, [bucket.list.length, activeId]);
 
+  // شمارش پیام‌های تازه‌ای که وقتی بالا هستیم می‌رسند — بج روی فلش پایین
+  useEffect(() => {
+    if (lastConvRef.current !== activeId) {
+      lastConvRef.current = activeId;
+      lastIdRef.current = 0;
+      return;
+    }
+    if (bucket.list.length === 0) return;
+    const lastId = bucket.list[bucket.list.length - 1].id;
+    const prev = lastIdRef.current;
+    if (prev > 0 && lastId > prev && !stickBottom.current) {
+      setNewBelow((n) => n + bucket.list.filter((x) => x.id > prev).length);
+    }
+    lastIdRef.current = Math.max(prev, lastId);
+  }, [bucket.list, activeId]);
+
+  // پرش نرم به آخرین پیام‌ها
+  const jumpToBottom = () => {
+    const el = scrollRef.current;
+    if (!el) return;
+    stickBottom.current = true;
+    setNewBelow(0);
+    el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
+  };
+
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    stickBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const dist = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickBottom.current = dist < 80;
+    setShowJumpDown(dist > 120);
+    if (stickBottom.current) setNewBelow(0);
     if (el.scrollTop < 60 && bucket.hasMore && !bucket.loading && bucket.list.length > 0) {
       const first = bucket.list[0];
       restoreRef.current = { height: el.scrollHeight, top: el.scrollTop };
@@ -1352,7 +1388,7 @@ export default function ChatWindow() {
       <div
         key={m.id}
         data-mid={m.id}
-        className={`group mb-2 flex items-end gap-1.5 ${mine ? "justify-end" : "justify-start"} ${selecting ? "cursor-pointer" : ""}`}
+        className={`group mb-2 flex items-end gap-1.5 ${mine ? "justify-start" : "justify-end"} ${selecting ? "cursor-pointer" : ""}`}
       >
         <div
           onTouchStart={(e) => onBubbleTouchStart(e, m)}
@@ -1377,13 +1413,13 @@ export default function ChatWindow() {
           }}
           className={`relative max-w-[78%] touch-pan-y select-none rounded-2xl px-3.5 py-2 shadow-sm [-webkit-touch-callout:none] md:select-text ${
             mine
-              ? "rounded-bl-md bg-emerald-600 text-white"
-              : "rounded-br-md border border-slate-100 bg-white text-slate-800"
+              ? "rounded-br-md bg-emerald-600 text-white"
+              : "rounded-bl-md border border-slate-100 bg-white text-slate-800"
           } ${selecting ? (isSelected ? "ring-2 ring-emerald-500" : "ring-1 ring-slate-200") : ""}`}
         >
           {selecting && (
             <span
-              className={`absolute -top-2.5 ${mine ? "-left-2.5" : "-right-2.5"} grid h-6 w-6 place-items-center rounded-full border-2 shadow ${
+              className={`absolute -top-2.5 ${mine ? "-right-2.5" : "-left-2.5"} grid h-6 w-6 place-items-center rounded-full border-2 shadow ${
                 isSelected ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-300 bg-white"
               }`}
             >
@@ -1641,12 +1677,13 @@ export default function ChatWindow() {
       </div>
 
       {/* ناحیه پیام‌ها */}
-      <div
-        ref={scrollRef}
-        onScroll={onScroll}
-        onClick={() => menuFor && setMenuFor(null)}
-        className="min-h-0 flex-1 overflow-y-auto px-3 py-4 md:px-6"
-      >
+      <div className="relative min-h-0 flex-1">
+        <div
+          ref={scrollRef}
+          onScroll={onScroll}
+          onClick={() => menuFor && setMenuFor(null)}
+          className="h-full overflow-y-auto px-3 py-4 md:px-6"
+        >
         {bucket.loading && bucket.list.length > 0 && (
           <div className="mb-3 flex justify-center">
             <Loader2 className="h-4 w-4 animate-spin text-slate-400" />
@@ -1672,6 +1709,23 @@ export default function ChatWindow() {
             );
           })}
         </div>
+        </div>
+
+        {/* فلش پرش به پایین — فقط وقتی از انتهای چت فاصله داریم */}
+        <button
+          onClick={jumpToBottom}
+          className={`absolute bottom-4 left-1/2 z-30 flex h-10 -translate-x-1/2 items-center gap-1.5 rounded-full border border-slate-200 bg-white px-3 shadow-lg transition-opacity duration-200 hover:bg-slate-50 ${
+            showJumpDown ? "opacity-100" : "pointer-events-none opacity-0"
+          }`}
+          title="رفتن به آخر پیام‌ها"
+        >
+          <ChevronDown className="h-5 w-5 text-slate-600" />
+          {newBelow > 0 && (
+            <span className="grid h-5 min-w-[20px] place-items-center rounded-full bg-emerald-600 px-1 text-[11px] font-bold leading-none text-white">
+              {newBelow > 99 ? "۹۹+" : newBelow.toLocaleString("fa-IR")}
+            </span>
+          )}
+        </button>
       </div>
 
       {/* جعبه نوشتن */}

@@ -8,7 +8,7 @@ export default function AuthLayout({ title, subtitle, children }) {
           <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-emerald-600 text-white shadow-lg shadow-emerald-200">
             <MessageCircle className="h-7 w-7" />
           </div>
-          <h1 className="mt-3 text-xl font-bold text-slate-800">پیام‌رسان راز</h1>
+          <h1 className="mt-3 text-xl font-bold text-slate-800">پیام‌رسان RAZ</h1>
         </div>
 
         <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-xl shadow-slate-200/60 sm:p-8">

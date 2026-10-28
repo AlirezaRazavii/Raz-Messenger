@@ -28,7 +28,7 @@ let ringNotif = null; // نوتیفیکیشن مرورگر برای زنگِ و�
 function showCallNotification(username, isVideo) {
   try {
     ringNotif?.close?.();
-    ringNotif = new Notification("تماس ورودی — راز", {
+    ringNotif = new Notification("تماس ورودی — RAZ", {
       body: `${username || "کاربر"} · تماس ${isVideo ? "تصویری" : "صوتی"}`,
       tag: "raz-incoming-call",
     });
