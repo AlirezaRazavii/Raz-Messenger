@@ -229,6 +229,8 @@ const useCallStore = create((set, get) => ({
       get()._send({ kind: "offer", call_type: callType, sdp: offer });
       startRingtone(true); // بوقِ آزاد برای تماس‌گیرنده
       startRingTimer(() => {
+        // محافظ: اگر جواب آمده و تماس جریان دارد، این تایمر دیگر معتبر نیست
+        if (get().status !== "calling") return;
         get()._send({ kind: "hangup" });
         get()._finish("پاسخی داده نشد.");
       });
@@ -273,6 +275,8 @@ const useCallStore = create((set, get) => ({
       });
       startRingtone(false);
       startRingTimer(() => {
+        // محافظ: اگر در این فاصله وضعیت عوض شده (جواب داده‌ایم)، تایمر بی‌اعتبار است
+        if (get().status !== "incoming") return;
         get()._send({ kind: "hangup" });
         get()._finish("");
       });
@@ -284,6 +288,7 @@ const useCallStore = create((set, get) => ({
       if ((st.status !== "calling" && st.status !== "connecting") || st.convId !== convId) return;
       if (remoteDescSet) return; // پاسخ تکراری (اکو) — قبلاً اعمال شده
       stopRingtone();
+      clearRingTimer(); // جواب آمد — تایمر بی‌پاسخی باید همین‌جا خاموش شود (باگ قطع ۴۵ ثانیه‌ای)
       set({ status: "connecting" });
       const p = ensurePeer();
       (async () => {
