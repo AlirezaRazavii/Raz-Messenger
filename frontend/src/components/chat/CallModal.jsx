@@ -90,6 +90,11 @@ export default function CallModal() {
     }
   }, [localStream, status]);
 
+  // React گاهی muted را بعد از مونت آپدیت نمی‌کند؛ برای اطمینان مستقیم هم ست می‌کنیم
+  useEffect(() => {
+    if (remoteRef.current) remoteRef.current.muted = remoteMuted;
+  }, [remoteMuted, remoteStream, isVideo, status]);
+
   if (status === "idle") return null;
 
   // ---------- زنگ ورودی ----------
@@ -212,8 +217,8 @@ export default function CallModal() {
 
   // ---------- تماس تصویری ----------
   return (
-      <audio ref={remoteRef} autoPlay muted={remoteMuted    <div ref={rootRef} className="fixed inset-0 z-[60] bg-black">
-      <video ref={remoteRef} autoPlay playsInline muted={remoteMuted} className="h-full w-full object-cover" />} className="hidden" />
+    <div ref={rootRef} className="fixed inset-0 z-[60] bg-black">
+      <video ref={remoteRef} autoPlay playsInline muted={remoteMuted} className="h-full w-full object-cover" />
 
       {status === "ended" ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-slate-950/90">
