@@ -165,15 +165,17 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return
 
         if kind == "hangup":
-            # hangupِ سرگردان از دستگاهی که تماس همان‌جا جواب/رد شده → دور
-            # انداخته می‌شود؛ وگرنه تایمرِ آن دستگاه تماسِ فعال را می‌کشت
-            state = await callstate.get_state(self.user.id)
-            if (
-                state
-                and state.get("conversation_id") == conversation_id
-                and state.get("status") in ("answer", "reject")
-            ):
-                return
+            # فقط hangupِ تایمرِ بی‌پاسخ (stage=ringing) ممکن است «سرگردان» باشد —
+            # از دستگاهی که هنوز زنگش ادامه دارد ولی تماس جای دیگر جواب/رد شده است.
+            # hangupِ عمدی (دستگاهِ در تماس یا خودِ تماس‌گیرنده) همیشه رله می‌شود
+            if signal.get("stage") == "ringing":
+                state = await callstate.get_state(self.user.id)
+                if (
+                    state
+                    and state.get("conversation_id") == conversation_id
+                    and state.get("status") in ("answer", "reject")
+                ):
+                    return
             await callstate.clear(self.user.id, conversation_id)
             for member_id in others:
                 await callstate.clear(member_id, conversation_id)

@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Mic, MicOff, Phone, PhoneOff, Video, VideoOff } from "lucide-react";
+import {
+  Loader2, Maximize, Mic, MicOff, Minimize, Phone, PhoneOff, Video, VideoOff, Volume2, VolumeX,
+} from "lucide-react";
 import useCallStore from "../../store/call";
 
 function fmtDur(ms) {
@@ -39,6 +41,7 @@ export default function CallModal() {
   const remoteStream = useCallStore((s) => s.remoteStream);
   const micOff = useCallStore((s) => s.micOff);
   const camOff = useCallStore((s) => s.camOff);
+  const remoteMuted = useCallStore((s) => s.remoteMuted);
   const endedReason = useCallStore((s) => s.endedReason);
   const startedAt = useCallStore((s) => s.startedAt);
 
@@ -47,9 +50,25 @@ export default function CallModal() {
   const hangup = useCallStore((s) => s.hangup);
   const toggleMic = useCallStore((s) => s.toggleMic);
   const toggleCam = useCallStore((s) => s.toggleCam);
+  const toggleRemoteAudio = useCallStore((s) => s.toggleRemoteAudio);
 
   const remoteRef = useRef(null);
   const localRef = useRef(null);
+  const rootRef = useRef(null); // برای تمام‌صفحه‌ی تماس تصویری
+  const [isFs, setIsFs] = useState(false);
+
+  useEffect(() => {
+    const onFsChange = () => setIsFs(Boolean(document.fullscreenElement));
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
+
+  const toggleFullscreen = () => {
+    try {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else rootRef.current?.requestFullscreen?.();
+    } catch {}
+  };
 
   const isVideo = callType === "video";
 
@@ -135,6 +154,26 @@ export default function CallModal() {
           {camOff ? <VideoOff className="h-6 w-6" /> : <Video className="h-6 w-6" />}
         </button>
       )}
+      {remoteStream && (
+        <button
+          onClick={toggleRemoteAudio}
+          title={remoteMuted ? "پخش صدای طرف مقابل" : "بی‌صدا کردن طرف مقابل"}
+          className={`grid h-14 w-14 place-items-center rounded-full shadow-lg transition ${
+            remoteMuted ? "bg-white text-slate-800" : "bg-white/20 text-white hover:bg-white/30"
+          }`}
+        >
+          {remoteMuted ? <VolumeX className="h-6 w-6" /> : <Volume2 className="h-6 w-6" />}
+        </button>
+      )}
+      {isVideo && status !== "ended" && (
+        <button
+          onClick={toggleFullscreen}
+          title={isFs ? "خروج از تمام‌صفحه" : "تمام‌صفحه"}
+          className="grid h-14 w-14 place-items-center rounded-full bg-white/20 text-white shadow-lg transition hover:bg-white/30"
+        >
+          {isFs ? <Minimize className="h-6 w-6" /> : <Maximize className="h-6 w-6" />}
+        </button>
+      )}
       {status !== "ended" && (
         <button
           onClick={hangup}
@@ -151,7 +190,7 @@ export default function CallModal() {
   if (!isVideo) {
     return (
       <div className="fixed inset-0 z-[60] flex flex-col items-center justify-center gap-6 bg-gradient-to-b from-slate-800 to-slate-950 p-6">
-        <audio ref={remoteRef} autoPlay className="hidden" />
+        <audio ref={remoteRef} autoPlay muted={remoteMuted} className="hidden" />
         {status === "ended" ? (
           <div className="text-center text-sm text-slate-300">{statusLine}</div>
         ) : (
@@ -173,8 +212,8 @@ export default function CallModal() {
 
   // ---------- تماس تصویری ----------
   return (
-    <div className="fixed inset-0 z-[60] bg-black">
-      <video ref={remoteRef} autoPlay playsInline className="h-full w-full object-cover" />
+      <audio ref={remoteRef} autoPlay muted={remoteMuted    <div ref={rootRef} className="fixed inset-0 z-[60] bg-black">
+      <video ref={remoteRef} autoPlay playsInline muted={remoteMuted} className="h-full w-full object-cover" />} className="hidden" />
 
       {status === "ended" ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 bg-slate-950/90">

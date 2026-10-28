@@ -8,7 +8,6 @@ import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
 import { extractError, apiDownloadAttachment } from "../../api/chat";
 import useCallStore from "../../store/call";
-import CallModal from "./CallModal";
 
 const EMPTY_BUCKET = { list: [], hasMore: false, loading: false };
 const MAX_UPLOAD_MB = 25;
@@ -1250,14 +1249,12 @@ export default function ChatWindow() {
     return (
       <div className="flex h-full w-full items-center justify-center text-sm text-slate-400">
         در حال بارگذاری گفتگو…
-        <CallModal />
       </div>
     );
   }
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-slate-50">
-      <CallModal />
       {/* هدر گفتگو */}
       <div
         onClick={isGroup ? () => setMembersOpen(true) : undefined}

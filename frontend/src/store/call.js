@@ -22,6 +22,25 @@ let ringTimer = null; // تایمر بی‌پاسخی
 let resetTimer = null; // بازگشت ended → idle
 let audioCtx = null;
 let ringLoop = null;
+let ringNotif = null; // نوتیفیکیشن مرورگر برای زنگِ وقتی تب پنهان است
+
+// نوتیفیکیشن مرورگر وقتی تب پنهان است — با tag تکراری، جایگزینِ قبلی می‌شود
+function showCallNotification(username, isVideo) {
+  try {
+    ringNotif?.close?.();
+    ringNotif = new Notification("تماس ورودی — راز", {
+      body: `${username || "کاربر"} · تماس ${isVideo ? "تصویری" : "صوتی"}`,
+      tag: "raz-incoming-call",
+    });
+    ringNotif.onclick = () => {
+      window.focus();
+      ringNotif?.close?.();
+      ringNotif = null;
+    };
+  } catch {
+    ringNotif = null;
+  }
+}
 
 function constraintsFor(callType) {
   return callType === "video"
@@ -55,6 +74,8 @@ function startRingtone(soft) {
     if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
     const g = soft ? 0.05 : 0.12; // برای تماس‌گیرنده آرام‌تر
     const pattern = () => {
+      // مرورگر تا اولین کلیک کاربر صدا را قفل می‌کند؛ در هر تیک دوباره تلاش می‌شود
+      if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
       ringBeep(0, 0.4, g);
       ringBeep(0.55, 0.4, g);
     };
@@ -68,6 +89,8 @@ function stopRingtone() {
     clearInterval(ringLoop);
     ringLoop = null;
   }
+  try { navigator.vibrate?.(0); } catch {} // توقف ویبره‌ی موبایل
+  try { ringNotif?.close?.(); ringNotif = null; } catch {} // بستن نوتیف
 }
 
 function startRingTimer(onTimeout, ms = RING_TIMEOUT) {
@@ -193,6 +216,7 @@ const useCallStore = create((set, get) => ({
   remoteStream: null,
   micOff: false,
   camOff: false,
+  remoteMuted: false, // بی‌صدایی صدای طرف مقابل (فقط سمت خودِ ما)
   startedAt: 0,
   endedReason: "",
 
@@ -252,7 +276,12 @@ const useCallStore = create((set, get) => ({
       await p.setLocalDescription(offer);
       await waitIceGathering(p); // همه‌ی کاندیدها داخل خود SDP جمع شوند (offer خودکفا می‌شود)
       if (get().status !== "calling") return; // در این فاصله تماس لغو شده است
-      get()._send({ kind: "offer", call_type: callType, sdp: p.localDescription });
+      const sent = get()._send({ kind: "offer", call_type: callType, sdp: p.localDescription });
+      if (!sent) {
+        // سوکت لحظه‌ای قطع است — همین‌جا بفهمیم بهتر از ۴۵ ثانیه بوق بی‌فایده است
+        get()._finish("اتصال به سرور برقرار نیست؛ دوباره تلاش کنید.");
+        return;
+      }
       startRingtone(true); // بوقِ آزاد برای تماس‌گیرنده
       startRingTimer(() => {
         // محافظ: اگر جواب آمده و تماس جریان دارد، این تایمر دیگر معتبر نیست
@@ -274,6 +303,8 @@ const useCallStore = create((set, get) => ({
     const kind = signal.kind;
 
     if (kind === "offer") {
+      // پخشِ مجددِ زنگی که تاریخش گذشته (تماس تمام شده) → نادیده
+      if (signal.expires_at && Date.now() > signal.expires_at) return;
       let st = get();
       if (st.status === "ended") {
         if (resetTimer) { clearTimeout(resetTimer); resetTimer = null; }
@@ -287,23 +318,35 @@ const useCallStore = create((set, get) => ({
         return;
       }
 
-      // نام طرف مقابل از لیست گفتگوها
+      // نام طرف مقابل — اول از خودِ سیگنال (حتی وقتی لیست گفتگوها هنوز لود نشده)
       const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
       pendingOffer = signal.sdp;
       set({
         status: "incoming",
         callType: signal.call_type === "video" ? "video" : "audio",
         convId,
-        peer: { id: ev.user_id, username: conv?.other_user?.username || "کاربر" },
+        peer: { id: ev.user_id, username: signal.caller_username || conv?.other_user?.username || "کاربر" },
         micOff: false,
         camOff: false,
         endedReason: "",
       });
       startRingtone(false);
+      // موبایل: ویبره / تب پنهان: نوتیفیکیشن مرورگر
+      try { navigator.vibrate?.([500, 300, 500, 300, 500]); } catch {}
+      if (document.hidden && "Notification" in window) {
+        try {
+          const show = () => showCallNotification(get().peer?.username, signal.call_type === "video");
+          if (Notification.permission === "granted") show();
+          else if (Notification.permission === "default") {
+            Notification.requestPermission().then((p) => { if (p === "granted") show(); }).catch(() => {});
+          }
+        } catch {}
+      }
       startRingTimer(() => {
         // محافظ: اگر در این فاصله وضعیت عوض شده (جواب داده‌ایم)، تایمر بی‌اعتبار است
         if (get().status !== "incoming") return;
-        get()._send({ kind: "hangup" });
+        // stage=ringing یعنی «تایمرِ بی‌پاسخ» — سرور اگر جای دیگر جواب/رد شده باشد این را دور می‌ریزد
+        get()._send({ kind: "hangup", stage: "ringing" });
         get()._finish("");
       });
       return;
@@ -445,6 +488,11 @@ const useCallStore = create((set, get) => ({
     set({ camOff: !st.camOff });
   },
 
+  toggleRemoteAudio: () => {
+    // فقط عنصر پخشِ سمت خودمان بی‌صدا می‌شود؛ به طرف مقابل چیزی نمی‌رسد
+    set((s) => ({ remoteMuted: !s.remoteMuted }));
+  },
+
   // ---------- داخلی ----------
   _send: (signal, targetConvId) => {
     const convId = targetConvId || get().convId;
@@ -471,6 +519,7 @@ const useCallStore = create((set, get) => ({
         remoteStream: null,
         micOff: false,
         camOff: false,
+        remoteMuted: false,
         startedAt: 0,
       });
       scheduleIdleReset();
@@ -482,6 +531,7 @@ const useCallStore = create((set, get) => ({
         remoteStream: null,
         micOff: false,
         camOff: false,
+        remoteMuted: false,
         startedAt: 0,
         peer: null,
         convId: null,
