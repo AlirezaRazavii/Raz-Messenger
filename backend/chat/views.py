@@ -1,4 +1,5 @@
 import mimetypes
+from datetime import timedelta
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -786,6 +787,9 @@ class CallLogListView(APIView):
     """پنل «تماس‌های اخیر» — گزارش تماس‌هایی که با من بوده (فاز ۵، بسته ۱)."""
 
     def get(self, request):
+        # زنگِ واقعی حداکثر ۴۶ ثانیه TTL دارد؛ ringingای که بیشتر از
+        # یک دقیقه از شروعش گذشته دیگر در جریان نیست → «بی‌پاسخ» دیده شود
+        stale_before = timezone.now() - timedelta(seconds=60)
         logs = list(
             CallLog.objects.filter(Q(caller=request.user) | Q(callee=request.user))
             .select_related("caller", "callee")
@@ -810,7 +814,11 @@ class CallLogListView(APIView):
                     },
                     "outgoing": log.caller_id == request.user.id,
                     "call_type": log.call_type,
-                    "status": log.status,
+                    "status": (
+                        "missed"
+                        if log.status == "ringing" and log.started_at < stale_before
+                        else log.status
+                    ),
                     "duration": log.duration,
                     "created_at": log.started_at,
                 }
