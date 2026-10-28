@@ -1,7 +1,9 @@
+import time
+
 from channels.db import database_sync_to_async
 from channels.generic.websocket import AsyncJsonWebsocketConsumer
 
-from . import presence
+from . import callstate, presence
 from .push import user_group
 
 
@@ -30,6 +32,23 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
         await self.send_json({"type": "ws.connected", "user_id": self.user.id})
 
+        # تماسی که در غیاب ما زنگ خورده باشد (پنجره‌ی ۴۵ ثانیه) → همین الان پخش شود؛
+        # هم «ورود دوباره به برنامه» و هم «وصل مجدد سوکت» را پوشش می‌دهد
+        ring = await callstate.get_state(self.user.id)
+        if ring and ring.get("status") == "ringing":
+            await self.send_json({
+                "type": "call.signal",
+                "conversation_id": ring.get("conversation_id"),
+                "user_id": ring.get("caller_id"),
+                "signal": {
+                    "kind": "offer",
+                    "call_type": ring.get("call_type", "audio"),
+                    "sdp": ring.get("sdp"),
+                    "expires_at": ring.get("expires_at"),
+                    "caller_username": ring.get("caller_username", ""),
+                },
+            })
+
     async def disconnect(self, close_code):
         user = getattr(self, "user", None)
         if user is None or not user.is_authenticated:
@@ -52,8 +71,6 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
         elif event_type == "typing":
             await self._handle_typing(content)
 
-        elif event_type == "read":
-            await self._handle_read(content)
         elif event_type == "read":
             await self._handle_read(content)
 
@@ -103,15 +120,81 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
             return
         if not await self._is_member(conversation_id):
             return
-        await self._send_to_others(
-            conversation_id,
-            {
-                "type": "call.signal",
-                "conversation_id": conversation_id,
-                "user_id": self.user.id,
-                "signal": signal,
-            },
-        )
+        if await self._is_group(conversation_id):
+            return  # تماس فقط برای گفتگوی خصوصی است (فاز ۵)
+
+        kind = signal.get("kind")
+        member_ids = await self._member_ids(conversation_id)
+        others = [m for m in member_ids if m != self.user.id]
+
+        if kind == "offer":
+            # زنگ روی سرور ذخیره می‌شود تا اگر کاربر در پنجره‌ی ۴۵ ثانیه وارد
+            # شد یا سوکتش وصلِ مجدد شد، تماس از سرور دوباره به او برسد
+            for member_id in others:
+                await callstate.set_ringing(
+                    member_id,
+                    caller_id=self.user.id,
+                    caller_username=self.user.username,
+                    conversation_id=conversation_id,
+                    call_type=signal.get("call_type", "audio"),
+                    sdp=signal.get("sdp"),
+                )
+            out_signal = dict(signal)
+            out_signal["expires_at"] = int(time.time() * 1000) + 45000
+            out_signal["caller_username"] = self.user.username
+            await self._relay_call(others, conversation_id, out_signal)
+            return
+
+        if kind in ("answer", "reject"):
+            # اول همه‌ی دستگاه‌های خودِ پاسخ‌دهنده زنگشان خاموش شود، بعد به
+            # تماس‌گیرنده برسد
+            await callstate.mark_settled(self.user.id, conversation_id, kind)
+            await self.channel_layer.group_send(
+                self.group_name,
+                {
+                    "type": "chat.event",
+                    "payload": {
+                        "type": "call.signal",
+                        "conversation_id": conversation_id,
+                        "user_id": self.user.id,
+                        "signal": {"kind": "answered" if kind == "answer" else "rejected"},
+                    },
+                },
+            )
+            await self._relay_call(others, conversation_id, signal)
+            return
+
+        if kind == "hangup":
+            # hangupِ سرگردان از دستگاهی که تماس همان‌جا جواب/رد شده → دور
+            # انداخته می‌شود؛ وگرنه تایمرِ آن دستگاه تماسِ فعال را می‌کشت
+            state = await callstate.get_state(self.user.id)
+            if (
+                state
+                and state.get("conversation_id") == conversation_id
+                and state.get("status") in ("answer", "reject")
+            ):
+                return
+            await callstate.clear(self.user.id, conversation_id)
+            for member_id in others:
+                await callstate.clear(member_id, conversation_id)
+            await self._relay_call(others, conversation_id, signal)
+            return
+
+        # بقیه‌ی سیگنال‌ها (مثل ice و busy)
+        await self._relay_call(others, conversation_id, signal)
+
+    async def _relay_call(self, member_ids, conversation_id, signal):
+        """ارسال سیگنال تماس به اعضای داده‌شده."""
+        payload = {
+            "type": "call.signal",
+            "conversation_id": conversation_id,
+            "user_id": self.user.id,
+            "signal": signal,
+        }
+        for member_id in member_ids:
+            await self.channel_layer.group_send(
+                user_group(member_id), {"type": "chat.event", "payload": payload}
+            )
 
     # ---------- رویدادهای خروجی ----------
 
@@ -143,6 +226,14 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
         return Participant.objects.filter(
             conversation_id=conversation_id, user_id=self.user.id
+        ).exists()
+
+    @database_sync_to_async
+    def _is_group(self, conversation_id):
+        from .models import Conversation
+
+        return Conversation.objects.filter(
+            id=conversation_id, group__isnull=False
         ).exists()
 
     @database_sync_to_async

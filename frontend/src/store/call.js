@@ -17,6 +17,7 @@ let pc = null; // RTCPeerConnection
 let pendingOffer = null; // SDP پیشنهاد تا لحظه‌ی پذیرش
 let pendingCandidates = []; // ICEهای رسیده قبل از setRemoteDescription
 let remoteDescSet = false;
+let answerSeen = false; // جلوگیری از اعمال دوباره‌ی answer (اکوی دِو / دو سوکت)
 let ringTimer = null; // تایمر بی‌پاسخی
 let resetTimer = null; // بازگشت ended → idle
 let audioCtx = null;
@@ -69,9 +70,9 @@ function stopRingtone() {
   }
 }
 
-function startRingTimer(onTimeout) {
+function startRingTimer(onTimeout, ms = RING_TIMEOUT) {
   clearRingTimer();
-  ringTimer = setTimeout(onTimeout, RING_TIMEOUT);
+  ringTimer = setTimeout(onTimeout, ms);
 }
 
 function clearRingTimer() {
@@ -149,6 +150,7 @@ function closePeer() {
   pendingOffer = null;
   pendingCandidates = [];
   remoteDescSet = false;
+  answerSeen = false;
   if (pc) {
     try {
       pc.onicecandidate = null;
@@ -158,6 +160,28 @@ function closePeer() {
     try { pc.close(); } catch {}
     pc = null;
   }
+}
+
+// صبر برای جمع‌شدن کامل کاندیدهای ICE — تا همه‌شان داخل خودِ SDP بروند.
+// این کار offer را «خودکفا» می‌کند: اگر سوکت گیرنده دیر وصل شود و offer
+// از روی سرور دوباره پخش شود، هیچ کاندیدی گم نمی‌شود.
+function waitIceGathering(p, maxMs = 2000) {
+  return new Promise((resolve) => {
+    if (p.iceGatheringState === "complete") return resolve();
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      p.removeEventListener("icegatheringstatechange", onChange);
+      resolve();
+    };
+    const onChange = () => {
+      if (p.iceGatheringState === "complete") finish();
+    };
+    const timer = setTimeout(finish, maxMs);
+    p.addEventListener("icegatheringstatechange", onChange);
+  });
 }
 
 const useCallStore = create((set, get) => ({
@@ -226,7 +250,9 @@ const useCallStore = create((set, get) => ({
     try {
       const offer = await p.createOffer();
       await p.setLocalDescription(offer);
-      get()._send({ kind: "offer", call_type: callType, sdp: offer });
+      await waitIceGathering(p); // همه‌ی کاندیدها داخل خود SDP جمع شوند (offer خودکفا می‌شود)
+      if (get().status !== "calling") return; // در این فاصله تماس لغو شده است
+      get()._send({ kind: "offer", call_type: callType, sdp: p.localDescription });
       startRingtone(true); // بوقِ آزاد برای تماس‌گیرنده
       startRingTimer(() => {
         // محافظ: اگر جواب آمده و تماس جریان دارد، این تایمر دیگر معتبر نیست
@@ -257,7 +283,7 @@ const useCallStore = create((set, get) => ({
       if (st.status !== "idle") {
         // تکرارِ همان تماس ورودی (اکوی سوکت در dev) → نادیده؛ غیر آن → مشغول
         if (st.status === "incoming" && st.convId === convId && st.peer?.id === ev.user_id) return;
-        get()._send({ kind: "busy" });
+        get()._send({ kind: "busy" }, convId); // busy به همان گفتگوی تماس‌دهنده برود، نه گفتگوی فعالِ ما
         return;
       }
 
@@ -286,7 +312,8 @@ const useCallStore = create((set, get) => ({
     if (kind === "answer") {
       const st = get();
       if ((st.status !== "calling" && st.status !== "connecting") || st.convId !== convId) return;
-      if (remoteDescSet) return; // پاسخ تکراری (اکو) — قبلاً اعمال شده
+      if (remoteDescSet || answerSeen) return; // پاسخ تکراری (اکو) — قبلاً اعمال/در حال اعمال
+      answerSeen = true; // همین‌جا قفل می‌شود تا نسخه‌ی تکراری رد شود
       stopRingtone();
       clearRingTimer(); // جواب آمد — تایمر بی‌پاسخی باید همین‌جا خاموش شود (باگ قطع ۴۵ ثانیه‌ای)
       set({ status: "connecting" });
@@ -332,6 +359,15 @@ const useCallStore = create((set, get) => ({
       get()._finish("کاربر در تماس دیگری است.");
       return;
     }
+
+    if (kind === "answered" || kind === "rejected") {
+      // یکی از تب‌ها/دستگاه‌های دیگرِ همین کاربر تماس را جواب یا رد کرده —
+      // زنگ همین‌جا هم باید خاموش شود، وگرنه تایمرش بعداً hangup می‌فرستد
+      // و تماسِ فعال را می‌کشد
+      const st = get();
+      if (st.status === "incoming" && st.convId === convId) get()._finish("");
+      return;
+    }
   },
 
   // ---------- پذیرش / رد / قطع ----------
@@ -341,6 +377,7 @@ const useCallStore = create((set, get) => ({
     stopRingtone();
     clearRingTimer();
     set({ status: "connecting" });
+    get()._send({ kind: "answered" }); // بقیه‌ی تب‌ها/دستگاه‌های خودم زنگ را قطع کنند
 
     let stream;
     try {
@@ -365,7 +402,9 @@ const useCallStore = create((set, get) => ({
       await flushCandidates();
       const answer = await p.createAnswer();
       await p.setLocalDescription(answer);
-      get()._send({ kind: "answer", sdp: answer });
+      await waitIceGathering(p); // پاسخ هم مثل offer خودکفا شود
+      if (get().status !== "connecting") return; // در این فاصله تماس تمام شده است
+      get()._send({ kind: "answer", sdp: p.localDescription });
       // «active» به‌محض connected شدنِ اتصال خودکار می‌آید
     } catch {
       get()._send({ kind: "hangup" });
@@ -376,6 +415,7 @@ const useCallStore = create((set, get) => ({
   reject: () => {
     if (get().status !== "incoming") return;
     get()._send({ kind: "reject" });
+    get()._send({ kind: "rejected" }); // بقیه‌ی تب‌ها/دستگاه‌های خودم زنگ را قطع کنند
     get()._finish("");
   },
 
@@ -406,10 +446,10 @@ const useCallStore = create((set, get) => ({
   },
 
   // ---------- داخلی ----------
-  _send: (signal) => {
-    const { convId } = get();
-    if (!convId) return;
-    useChatStore.getState().sendCommand({
+  _send: (signal, targetConvId) => {
+    const convId = targetConvId || get().convId;
+    if (!convId) return false;
+    return useChatStore.getState().sendCommand({
       type: "call.signal",
       conversation_id: convId,
       signal,
