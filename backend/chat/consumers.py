@@ -54,6 +54,11 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
 
         elif event_type == "read":
             await self._handle_read(content)
+        elif event_type == "read":
+            await self._handle_read(content)
+
+        elif event_type == "call.signal":
+            await self._handle_call(content)
         # رویداد ناشناخته → بی‌صدا نادیده گرفته می‌شود
 
     async def _handle_typing(self, content):
@@ -87,6 +92,24 @@ class ChatConsumer(AsyncJsonWebsocketConsumer):
                 "conversation_id": conversation_id,
                 "user_id": self.user.id,
                 "last_read_message_id": message_id,
+            },
+        )
+        
+    async def _handle_call(self, content):
+        """سیگنالینگ WebRTC (فاز ۵) — بازتاب سیگنال تماس به اعضای دیگر گفتگو."""
+        conversation_id = _as_int(content.get("conversation_id"))
+        signal = content.get("signal")
+        if conversation_id is None or not isinstance(signal, dict):
+            return
+        if not await self._is_member(conversation_id):
+            return
+        await self._send_to_others(
+            conversation_id,
+            {
+                "type": "call.signal",
+                "conversation_id": conversation_id,
+                "user_id": self.user.id,
+                "signal": signal,
             },
         )
 

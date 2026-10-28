@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight, Check, CheckCheck, Copy, Crown, Download, File as FileIcon, Forward,
-  Image as ImageIcon, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Play,
-  Reply, SendHorizonal, Trash2, Users, UserPlus, X,
+  Image as ImageIcon, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Phone, Play,
+  Reply, SendHorizonal, Trash2, Users, UserPlus, Video, X,
 } from "lucide-react";
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
 import { extractError, apiDownloadAttachment } from "../../api/chat";
+import useCallStore from "../../store/call";
+import CallModal from "./CallModal";
 
 const EMPTY_BUCKET = { list: [], hasMore: false, loading: false };
 const MAX_UPLOAD_MB = 25;
@@ -682,6 +684,7 @@ export default function ChatWindow() {
   const editMessage = useChatStore((s) => s.editMessage);
   const deleteMessage = useChatStore((s) => s.deleteMessage);
   const sendTyping = useChatStore((s) => s.sendTyping);
+  const startCall = useCallStore((s) => s.startCall);
 
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
@@ -1247,12 +1250,14 @@ export default function ChatWindow() {
     return (
       <div className="flex h-full w-full items-center justify-center text-sm text-slate-400">
         در حال بارگذاری گفتگو…
+        <CallModal />
       </div>
     );
   }
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-slate-50">
+      <CallModal />
       {/* هدر گفتگو */}
       <div
         onClick={isGroup ? () => setMembersOpen(true) : undefined}
@@ -1307,6 +1312,25 @@ export default function ChatWindow() {
             )}
           </div>
         </div>
+
+        {!isGroup && (
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              onClick={() => startCall(conv, "audio")}
+              className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"
+              title="تماس صوتی"
+            >
+              <Phone className="h-5 w-5" />
+            </button>
+            <button
+              onClick={() => startCall(conv, "video")}
+              className="grid h-9 w-9 place-items-center rounded-xl text-slate-400 hover:bg-emerald-50 hover:text-emerald-600"
+              title="تماس تصویری"
+            >
+              <Video className="h-5 w-5" />
+            </button>
+          </div>
+        )}
 
         {isGroup && (
           <button

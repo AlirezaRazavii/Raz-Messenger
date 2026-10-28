@@ -18,6 +18,7 @@ import {
   apiRemoveGroupMember,
   extractError,
 } from "../api/chat";
+import useCallStore from "./call";
 
 const TYPING_TTL = 4000;
 const lastSelfTyping = {}; // محافظ اکو: آخرین باری که خودم رویداد typing فرستادم
@@ -106,6 +107,7 @@ const useChatStore = create((set, get) => ({
       case "group.new": get()._applyGroupNew(ev); break;
       case "group.updated": get()._applyGroupUpdated(ev); break;
       case "group.deleted": get()._applyGroupDeleted(ev); break;
+      case "call.signal": get()._applyCallSignal(ev); break;
       default: break;
     }
   },
@@ -280,6 +282,11 @@ const useChatStore = create((set, get) => ({
       };
     });
     if (get().activeId === convId) get().setActive(null);
+  },
+
+  // ---------------- تماس (فاز ۵) ----------------
+  _applyCallSignal: (ev) => {
+    useCallStore.getState().handleSignal(ev);
   },
 
   // ---------------- اکشن‌های REST ----------------
