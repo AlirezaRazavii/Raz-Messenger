@@ -9,6 +9,7 @@ import {
   apiForwardMessage,
   apiEditMessage,
   apiDeleteMessage,
+  apiBulkDeleteMessages,
   apiSearchUsers,
   apiCreateGroup,
   apiGetGroup,
@@ -518,9 +519,15 @@ const useChatStore = create((set, get) => ({
     return data;
   },
 
-  deleteMessage: async (convId, messageId) => {
-    await apiDeleteMessage(messageId);
+  // scope: "me" = مخفی فقط برای خودم؛ "everyone" = حذف برای هر دو طرف
+  deleteMessage: async (convId, messageId, scope = "everyone") => {
+    await apiDeleteMessage(messageId, scope);
     get()._applyMessageDeleted({ id: messageId });
+  },
+
+  deleteMessagesBulk: async (convId, ids, scope = "me") => {
+    await apiBulkDeleteMessages(convId, ids, scope);
+    for (const id of ids) get()._applyMessageDeleted({ id });
   },
 
   searchUsers: async (q) => {

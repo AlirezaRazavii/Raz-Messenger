@@ -108,6 +108,14 @@ class Message(models.Model):
     created_at = models.DateTimeField("زمان ارسال", auto_now_add=True)
     edited_at = models.DateTimeField("زمان ویرایش", null=True, blank=True)
 
+    # حذف یک‌طرفه — پیام برای این کاربرها نامرئی است ولی برای بقیه می‌مانَد
+    deleted_for = models.ManyToManyField(
+        settings.AUTH_USER_MODEL,
+        verbose_name="حذف‌شده برای",
+        related_name="hidden_messages",
+        blank=True,
+    )
+
     # فاز ۵ (بسته ۱) — ردیف سیستمی تماس داخل چت
     kind = models.CharField(
         "نوع ردیف",

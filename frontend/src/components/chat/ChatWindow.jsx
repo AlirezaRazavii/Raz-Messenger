@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowRight, Check, CheckCheck, Copy, Crown, Download, File as FileIcon, Forward,
-  Image as ImageIcon, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Phone, PhoneCall,
+  Image as ImageIcon, ListChecks, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Phone, PhoneCall,
   PhoneIncoming, PhoneMissed, PhoneOutgoing, Play,
   Reply, SendHorizonal, Trash2, Users, UserPlus, Video, X,
 } from "lucide-react";
@@ -726,6 +726,7 @@ export default function ChatWindow() {
   const sendMessage = useChatStore((s) => s.sendMessage);
   const editMessage = useChatStore((s) => s.editMessage);
   const deleteMessage = useChatStore((s) => s.deleteMessage);
+  const deleteMessagesBulk = useChatStore((s) => s.deleteMessagesBulk);
   const sendTyping = useChatStore((s) => s.sendTyping);
   const startCall = useCallStore((s) => s.startCall);
 
@@ -745,12 +746,24 @@ export default function ChatWindow() {
   const [recSecs, setRecSecs] = useState(0);
   const [tick, setTick] = useState(0);
 
+  // حالت انتخاب پیام‌ها + پرش به پیامِ پاسخ‌داده‌شده
+  const [selecting, setSelecting] = useState(false);
+  const [selected, setSelected] = useState({}); // { [messageId]: true }
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [jumpTo, setJumpTo] = useState(null);
+
   const scrollRef = useRef(null);
   const stickBottom = useRef(true);
   const restoreRef = useRef(null);
   const lastTypingSent = useRef(0);
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
+
+  // لمس (موبایل): نگه‌داشتن = منو، کشیدن به راست = پاسخ
+  const touchRef = useRef(null);
+  const pressTimer = useRef(null);
+  const suppressClick = useRef(false);
+  const jumpTries = useRef(0);
 
   // ضبط ویس
   const mediaRecorderRef = useRef(null);
@@ -790,6 +803,46 @@ export default function ChatWindow() {
     return () => clearInterval(t);
   }, [typingMap]);
 
+  const clearPressTimer = () => {
+    if (pressTimer.current) {
+      clearTimeout(pressTimer.current);
+      pressTimer.current = null;
+    }
+  };
+
+  const senderId = (m) => (typeof m.sender === "number" ? m.sender : m.sender?.id);
+
+  const toggleSelect = (mid) =>
+    setSelected((sel) => {
+      const next = { ...sel };
+      if (next[mid]) delete next[mid];
+      else next[mid] = true;
+      return next;
+    });
+
+  const exitSelecting = () => {
+    setSelecting(false);
+    setSelected({});
+  };
+
+  const startSelect = (m) => {
+    setMenuFor(null);
+    setSelecting(true);
+    setSelected(m ? { [m.id]: true } : {});
+  };
+
+  const selectAllLoaded = () => {
+    const all = {};
+    for (const item of bucket.list) if (item.kind !== "call") all[item.id] = true;
+    setSelected(all);
+  };
+
+  const selectedIds = Object.keys(selected).map(Number);
+  const selectedCount = selectedIds.length;
+  const selectedAllMine =
+    selectedCount > 0 &&
+    bucket.list.filter((x) => selected[x.id]).every((x) => senderId(x) === myId);
+
   // ریست موقع عوض شدن گفتگو
   useEffect(() => {
     stickBottom.current = true;
@@ -797,6 +850,12 @@ export default function ChatWindow() {
     setEditing(null);
     setMenuFor(null);
     setReplyTo(null);
+    setSelecting(false);
+    setSelected({});
+    setJumpTo(null);
+    suppressClick.current = false;
+    touchRef.current = null;
+    clearPressTimer();
     setForwarding(null);
     setError("");
     setMembersOpen(false);
@@ -1133,19 +1192,148 @@ export default function ChatWindow() {
     }
   };
 
-  const doDelete = async (m) => {
+  // scope: "me" = مخفی برای خودم؛ "everyone" = حذف برای هر دو طرف
+  const doDelete = async (m, scope = "everyone") => {
     setMenuFor(null);
-    if (!window.confirm("این پیام برای هر دو طرف حذف شود؟")) return;
+    if (scope === "everyone" && !window.confirm("این پیام برای هر دو طرف حذف شود؟")) return;
     setError("");
     try {
-      await deleteMessage(activeId, m.id);
+      await deleteMessage(activeId, m.id, scope);
     } catch (e) {
       setError(extractError ? extractError(e) : "خطا در حذف پیام");
     }
   };
 
+  const doBulkDelete = async (scope) => {
+    if (bulkBusy || selectedCount === 0) return;
+    if (scope === "everyone" && !window.confirm(`${selectedCount} پیام برای هر دو طرف حذف شود؟`)) return;
+    setBulkBusy(true);
+    setError("");
+    try {
+      await deleteMessagesBulk(activeId, selectedIds, scope);
+      exitSelecting();
+    } catch (e) {
+      setError(extractError ? extractError(e) : "خطا در حذف پیام‌ها");
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  // ---------- لمس (موبایل): نگه‌داشتن = منو، کشیدن به راست = پاسخ ----------
+  const onBubbleTouchStart = (e, m) => {
+    if (selecting) return;
+    const t = e.touches[0];
+    if (!t) return;
+    touchRef.current = { x: t.clientX, y: t.clientY, mid: m.id, moved: false, longFired: false };
+    clearPressTimer();
+    pressTimer.current = setTimeout(() => {
+      const st = touchRef.current;
+      if (!st || st.moved || st.mid !== m.id) return;
+      st.longFired = true;
+      // کلیکِ پس از رها شدن خورده شود تا لایت‌باکس/پخش باز نشود
+      suppressClick.current = true;
+      setTimeout(() => {
+        suppressClick.current = false;
+      }, 450);
+      try {
+        navigator.vibrate?.(12);
+      } catch {}
+      setMenuFor(m.id);
+    }, 450);
+  };
+
+  const onBubbleTouchMove = (e) => {
+    const st = touchRef.current;
+    if (!st) return;
+    const t = e.touches[0];
+    if (!t) return;
+    const dx = t.clientX - st.x;
+    const dy = t.clientY - st.y;
+    if (Math.abs(dx) > 10 || Math.abs(dy) > 10) {
+      st.moved = true;
+      clearPressTimer(); // حرکت یعنی لمس طولانی نیست
+    }
+    // بازخورد کشیدن به سمت راست — فقط وقتی حرکت افقی غالب است
+    if (!st.moved || Math.abs(dx) <= Math.abs(dy)) return;
+    const pull = Math.max(0, Math.min(dx, 96));
+    e.currentTarget.style.transform = `translateX(${pull}px)`;
+  };
+
+  const onBubbleTouchEnd = (e, m) => {
+    const st = touchRef.current;
+    clearPressTimer();
+    const el = e.currentTarget;
+    el.style.transition = "transform .18s ease-out";
+    el.style.transform = "";
+    setTimeout(() => {
+      el.style.transition = "";
+    }, 220);
+    touchRef.current = null;
+    if (!st || st.mid !== m.id || st.longFired || selecting) return;
+    const t = e.changedTouches[0];
+    if (!t) return;
+    const dx = t.clientX - st.x;
+    const dy = t.clientY - st.y;
+    // سوایپ به راست = پاسخ سریع (مثل تلگرام)
+    if (dx > 64 && Math.abs(dy) < 48) {
+      try {
+        navigator.vibrate?.(10);
+      } catch {}
+      setReplyTo(m);
+    }
+  };
+
+  const onBubbleTouchCancel = (e) => {
+    clearPressTimer();
+    const el = e.currentTarget;
+    el.style.transition = "transform .18s ease-out";
+    el.style.transform = "";
+    setTimeout(() => {
+      el.style.transition = "";
+    }, 220);
+    touchRef.current = null;
+  };
+
+  // ---------- پرش به پیامِ پاسخ‌داده‌شده ----------
+  const flashAndScroll = (el) => {
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("msg-flash");
+    setTimeout(() => el.classList.remove("msg-flash"), 1400);
+  };
+
+  const jumpToMessage = (mid) => {
+    if (!mid) return;
+    const el = scrollRef.current?.querySelector(`[data-mid="${mid}"]`);
+    if (el) {
+      flashAndScroll(el);
+      return;
+    }
+    // پیام هنوز لود نشده — یک صفحه قدیمی‌تر می‌آوریم و دوباره تلاش می‌کنیم
+    jumpTries.current = 0;
+    setJumpTo(mid);
+  };
+
+  useEffect(() => {
+    if (jumpTo == null) return;
+    const el = scrollRef.current?.querySelector(`[data-mid="${jumpTo}"]`);
+    if (el) {
+      flashAndScroll(el);
+      setJumpTo(null);
+      return;
+    }
+    if (bucket.loading) return;
+    if (bucket.hasMore && bucket.list.length > 0 && jumpTries.current < 8) {
+      jumpTries.current += 1;
+      loadMessages(activeId, { before: bucket.list[0].id });
+    } else {
+      setJumpTo(null);
+      setError("پیام اصلی در تاریخچهٔ بارگذاری‌شده پیدا نشد.");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [jumpTo, bucket.list.length, bucket.loading]);
+
   const renderBubble = (m) => {
-    const mine = (typeof m.sender === "number" ? m.sender : m.sender?.id) === myId;
+    const mine = senderId(m) === myId;
     // ردیف سیستمی تماس — حباب ندارد؛ وسط چت نشان داده می‌شود
     if (m.kind === "call") {
       return (
@@ -1158,16 +1346,50 @@ export default function ChatWindow() {
     }
     const isEditing = editing?.id === m.id;
     const isEdited = Boolean(m.edited_at ?? m.edited);
+    const isSelected = Boolean(selected[m.id]);
 
     return (
-      <div key={m.id} className={`group mb-2 flex items-end gap-1.5 ${mine ? "justify-end" : "justify-start"}`}>
+      <div
+        key={m.id}
+        data-mid={m.id}
+        className={`group mb-2 flex items-end gap-1.5 ${mine ? "justify-end" : "justify-start"} ${selecting ? "cursor-pointer" : ""}`}
+      >
         <div
-          className={`relative max-w-[78%] rounded-2xl px-3.5 py-2 shadow-sm ${
+          onTouchStart={(e) => onBubbleTouchStart(e, m)}
+          onTouchMove={onBubbleTouchMove}
+          onTouchEnd={(e) => onBubbleTouchEnd(e, m)}
+          onTouchCancel={onBubbleTouchCancel}
+          onContextMenu={(e) => e.preventDefault()}
+          onClickCapture={(e) => {
+            // کلیکِ بلافاصله بعد از لمس طولانی خورده شود
+            if (suppressClick.current) {
+              suppressClick.current = false;
+              e.preventDefault();
+              e.stopPropagation();
+              return;
+            }
+            // در حالت انتخاب، لمس/کلیک روی حباب = انتخاب یا خارج‌کردن از انتخاب
+            if (selecting) {
+              e.preventDefault();
+              e.stopPropagation();
+              toggleSelect(m.id);
+            }
+          }}
+          className={`relative max-w-[78%] touch-pan-y select-none rounded-2xl px-3.5 py-2 shadow-sm [-webkit-touch-callout:none] md:select-text ${
             mine
               ? "rounded-bl-md bg-emerald-600 text-white"
               : "rounded-br-md border border-slate-100 bg-white text-slate-800"
-          }`}
+          } ${selecting ? (isSelected ? "ring-2 ring-emerald-500" : "ring-1 ring-slate-200") : ""}`}
         >
+          {selecting && (
+            <span
+              className={`absolute -top-2.5 ${mine ? "-left-2.5" : "-right-2.5"} grid h-6 w-6 place-items-center rounded-full border-2 shadow ${
+                isSelected ? "border-emerald-600 bg-emerald-600 text-white" : "border-slate-300 bg-white"
+              }`}
+            >
+              {isSelected && <Check className="h-4 w-4" />}
+            </span>
+          )}
           {isEditing ? (
             <div className="min-w-[200px]">
               <textarea
@@ -1209,12 +1431,17 @@ export default function ChatWindow() {
               )}
               {m.reply_to && (
                 <div
-                  className={`mb-1.5 truncate rounded-lg border-r-2 px-2 py-1 text-[11px] leading-5 ${
+                  onClick={(e) => {
+                    if (selecting) return; // در حالت انتخاب، کلیک = انتخاب است
+                    e.stopPropagation();
+                    jumpToMessage(m.reply_to.id);
+                  }}
+                  title="رفتن به پیام اصلی"
+                  className={`mb-1.5 cursor-pointer truncate rounded-lg border-r-2 px-2 py-1 text-[11px] leading-5 transition-colors ${
                     mine
-                      ? "border-emerald-200 bg-emerald-500/25 text-emerald-50"
-                      : "border-emerald-500 bg-emerald-50 text-slate-600"
+                      ? "border-emerald-200 bg-emerald-500/25 text-emerald-50 hover:bg-emerald-500/40"
+                      : "border-emerald-500 bg-emerald-50 text-slate-600 hover:bg-emerald-100"
                   }`}
-                  title={m.reply_to.text}
                 >
                   <span className="font-bold">{m.reply_to.sender_username ?? "کاربر"}: </span>
                   {m.reply_to.text}
@@ -1250,48 +1477,64 @@ export default function ChatWindow() {
                 e.stopPropagation();
                 setMenuFor(menuFor === m.id ? null : m.id);
               }}
-              className="grid h-7 w-7 place-items-center rounded-full text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-600 group-hover:opacity-100"
+              className="pointer-events-none grid h-7 w-7 place-items-center rounded-full text-slate-400 opacity-0 transition-opacity hover:bg-slate-200 hover:text-slate-600 group-hover:opacity-100 md:pointer-events-auto"
               title="گزینه‌ها"
             >
               <MoreHorizontal className="h-4 w-4" />
             </button>
             {menuFor === m.id && (
-              <div className="absolute bottom-full left-0 z-20 mb-1 w-36 overflow-hidden rounded-xl border border-slate-200 bg-white shadow-lg">
-                <button
-                  onClick={() => doCopy(m)}
-                  className="flex w-full items-center gap-2 px-3 py-2 text-right text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  <Copy className="h-4 w-4" /> کپی متن
-                </button>
-                <button
-                  onClick={() => startReply(m)}
-                  className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  <Reply className="h-4 w-4" /> پاسخ
-                </button>
-                <button
-                  onClick={() => startForward(m)}
-                  className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-slate-700 hover:bg-slate-50"
-                >
-                  <Forward className="h-4 w-4" /> فوروارد
-                </button>
-                {mine && (
-                  <>
+              <>
+                {/* روی موبایل منو به شکل برگهٔ پایین صفحه باز می‌شود */}
+                <div className="fixed inset-0 z-40 md:hidden" onClick={() => setMenuFor(null)} />
+                <div className="fixed inset-x-4 bottom-4 z-50 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-lg md:absolute md:inset-x-auto md:bottom-full md:left-0 md:mb-1 md:w-40 md:rounded-xl">
+                  <button
+                    onClick={() => doCopy(m)}
+                    className="flex w-full items-center gap-2 px-3 py-2.5 text-right text-sm text-slate-700 hover:bg-slate-50 md:py-2"
+                  >
+                    <Copy className="h-4 w-4" /> کپی متن
+                  </button>
+                  <button
+                    onClick={() => startReply(m)}
+                    className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2.5 text-right text-sm text-slate-700 hover:bg-slate-50 md:py-2"
+                  >
+                    <Reply className="h-4 w-4" /> پاسخ
+                  </button>
+                  <button
+                    onClick={() => startForward(m)}
+                    className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2.5 text-right text-sm text-slate-700 hover:bg-slate-50 md:py-2"
+                  >
+                    <Forward className="h-4 w-4" /> فوروارد
+                  </button>
+                  <button
+                    onClick={() => startSelect(m)}
+                    className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2.5 text-right text-sm text-slate-700 hover:bg-slate-50 md:py-2"
+                  >
+                    <ListChecks className="h-4 w-4" /> انتخاب پیام‌ها
+                  </button>
+                  {mine && (
                     <button
                       onClick={() => startEdit(m)}
-                      className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-slate-700 hover:bg-slate-50"
+                      className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2.5 text-right text-sm text-slate-700 hover:bg-slate-50 md:py-2"
                     >
                       <Pencil className="h-4 w-4" /> ویرایش
                     </button>
+                  )}
+                  <button
+                    onClick={() => doDelete(m, "me")}
+                    className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2.5 text-right text-sm text-red-600 hover:bg-red-50 md:py-2"
+                  >
+                    <Trash2 className="h-4 w-4" /> حذف برای من
+                  </button>
+                  {mine && (
                     <button
-                      onClick={() => doDelete(m)}
-                      className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2 text-right text-sm text-red-600 hover:bg-red-50"
+                      onClick={() => doDelete(m, "everyone")}
+                      className="flex w-full items-center gap-2 border-t border-slate-100 px-3 py-2.5 text-right text-sm text-red-600 hover:bg-red-50 md:py-2"
                     >
-                      <Trash2 className="h-4 w-4" /> حذف
+                      <Trash2 className="h-4 w-4" /> حذف برای همه
                     </button>
-                  </>
-                )}
-              </div>
+                  )}
+                </div>
+              </>
             )}
           </div>
         )}
@@ -1435,6 +1678,44 @@ export default function ChatWindow() {
       <div className="shrink-0 border-t border-slate-200 bg-white p-3">
         {error && <div className="mb-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">{error}</div>}
 
+        {selecting ? (
+          <div className="mx-auto flex max-w-3xl flex-wrap items-center gap-2">
+            <button
+              onClick={exitSelecting}
+              className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-500 hover:bg-slate-200"
+              title="لغو انتخاب"
+            >
+              <X className="h-5 w-5" />
+            </button>
+            <span className="shrink-0 text-sm font-bold text-slate-700">
+              {selectedCount} پیام انتخاب شد
+            </span>
+            <button
+              onClick={selectAllLoaded}
+              className="shrink-0 rounded-lg bg-slate-100 px-2.5 py-1.5 text-xs font-medium text-slate-600 hover:bg-slate-200"
+            >
+              انتخاب همه
+            </button>
+            <span className="flex-1" />
+            <button
+              onClick={() => doBulkDelete("me")}
+              disabled={bulkBusy || selectedCount === 0}
+              className="shrink-0 rounded-xl bg-red-50 px-3 py-2 text-xs font-bold text-red-600 transition-colors hover:bg-red-100 disabled:opacity-40"
+            >
+              {bulkBusy ? "…" : "حذف برای من"}
+            </button>
+            {selectedAllMine && (
+              <button
+                onClick={() => doBulkDelete("everyone")}
+                disabled={bulkBusy}
+                className="shrink-0 rounded-xl bg-red-600 px-3 py-2 text-xs font-bold text-white transition-colors hover:bg-red-700 disabled:opacity-40"
+              >
+                حذف برای همه
+              </button>
+            )}
+          </div>
+        ) : (
+          <>
         {replyTo && (
           <div className="mx-auto mb-2 flex max-w-3xl items-start gap-2 rounded-xl border-r-2 border-emerald-500 bg-emerald-50 px-3 py-2">
             <div className="min-w-0 flex-1">
@@ -1560,6 +1841,8 @@ export default function ChatWindow() {
               {sending ? <Loader2 className="h-5 w-5 animate-spin" /> : <SendHorizonal className="h-5 w-5 -scale-x-100" />}
             </button>
           </div>
+        )}
+          </>
         )}
       </div>
 

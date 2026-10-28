@@ -30,4 +30,28 @@ html {
 
 body {
   margin: 0;
+  touch-action: manipulation; /* حذف تأخیر/زومِ دوبار-لمس روی موبایل */
+}
+
+/* موبایل: iOS Safari با فونت کمتر از ۱۶px روی اینپوت‌ها هنگام فوکوس زوم می‌کند */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px !important;
+  }
+}
+
+/* پرش به پیام پاسخ‌داده‌شده — فلش زرد و محو شدن */
+.msg-flash {
+  border-radius: 12px;
+  animation: msg-flash 1.3s ease-out;
+}
+@keyframes msg-flash {
+  0% {
+    background-color: rgb(254 249 195 / 0.95);
+  }
+  100% {
+    background-color: transparent;
+  }
 }

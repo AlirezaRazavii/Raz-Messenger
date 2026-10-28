@@ -14,6 +14,11 @@ urlpatterns = [
     ),
     path("messages/<int:msg_id>/", views.MessageDetailView.as_view(), name="message-detail"),
     path(
+        "conversations/<int:conv_id>/messages/bulk-delete/",
+        views.MessageBulkDeleteView.as_view(),
+        name="message-bulk-delete",
+    ),
+    path(
         "messages/<int:msg_id>/forward/",
         views.MessageForwardView.as_view(),
         name="message-forward",

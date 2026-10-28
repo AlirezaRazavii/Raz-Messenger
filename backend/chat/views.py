@@ -55,6 +55,7 @@ def _annotated_conversations(user):
         ),
         last_message_id=Subquery(
             Message.objects.filter(conversation=OuterRef("pk"))
+            .exclude(deleted_for=user)  # حذفِ «برای من» در پیش‌نمایش سایدبار هم اعمال شود
             .order_by("-id")
             .values("id")[:1]
         ),
@@ -100,6 +101,7 @@ def _serialize_conversations(user, conversations):
         unread = (
             Message.objects.filter(conversation_id=c.id, id__gt=last_read_id)
             .exclude(sender=user)
+            .exclude(deleted_for=user)
             .count()
         )
         last_message = (
@@ -210,10 +212,12 @@ def _serialize_group(user, group, include_members=False):
     unread = (
         Message.objects.filter(conversation_id=conv.id, id__gt=last_read_id)
         .exclude(sender=user)
+        .exclude(deleted_for=user)
         .count()
     )
     lm = (
         Message.objects.filter(conversation=conv)
+        .exclude(deleted_for=user)
         .select_related("sender")
         .order_by("-id")
         .first()
@@ -556,8 +560,10 @@ class MessageListCreateView(APIView):
             limit = HISTORY_PAGE_DEFAULT
         limit = max(1, min(limit, HISTORY_PAGE_MAX))
 
-        qs = Message.objects.filter(conversation=conv).select_related(
-            "sender", "reply_to", "reply_to__sender"
+        qs = (
+            Message.objects.filter(conversation=conv)
+            .exclude(deleted_for=request.user)  # پیام‌های حذف‌شده «برای من» نمی‌آیند
+            .select_related("sender", "reply_to", "reply_to__sender")
         )
         if before > 0:
             qs = qs.filter(id__lt=before)
@@ -695,8 +701,25 @@ class MessageDetailView(APIView):
         )
         if msg is None:
             return Response({"detail": "پیام پیدا نشد."}, status=404)
+        if _get_my_conversation(request.user, msg.conversation_id) is None:
+            return Response({"detail": "پیام پیدا نشد."}, status=404)
+
+        # scope=me → فقط برای خودِ کاربر مخفی می‌شود (حتی پیام طرف مقابل)؛
+        # scope=everyone → حذف قطعی برای هر دو طرف، فقط برای پیام‌های خودش
+        scope = (
+            "me"
+            if isinstance(request.data, dict) and request.data.get("scope") == "me"
+            else "everyone"
+        )
+
+        if scope == "me":
+            msg.deleted_for.add(request.user)
+            return Response(status=204)
+
         if msg.sender_id != request.user.id:
-            return Response({"detail": "فقط فرستنده می‌تواند پیام را حذف کند."}, status=403)
+            return Response(
+                {"detail": "حذف برای همه فقط برای پیام‌های خودت ممکن است."}, status=403
+            )
 
         conv = msg.conversation
         message_id = msg.id
@@ -712,6 +735,56 @@ class MessageDetailView(APIView):
                 "message_id": message_id,
             },
         )
+        return Response(status=204)
+
+
+class MessageBulkDeleteView(APIView):
+    """حذف دسته‌ای — «برای من» (هر پیامی از گفتگو) یا «برای همه» (فقط پیام‌های خودم)."""
+
+    MAX_IDS = 100
+
+    def post(self, request, conv_id):
+        conv = _get_my_conversation(request.user, conv_id)
+        if conv is None:
+            return Response({"detail": "گفتگو پیدا نشد."}, status=404)
+
+        scope = (
+            request.data.get("scope") if isinstance(request.data, dict) else None
+        ) or "me"
+        ids_raw = request.data.get("ids") if isinstance(request.data, dict) else None
+        if not isinstance(ids_raw, list) or not ids_raw:
+            return Response({"ids": ["فهرست پیام‌ها خالی است."]}, status=400)
+        try:
+            ids = [int(x) for x in ids_raw][: self.MAX_IDS]
+        except (TypeError, ValueError):
+            return Response({"ids": ["شناسه پیام‌ها نامعتبر است."]}, status=400)
+
+        msgs = list(Message.objects.filter(conversation=conv, id__in=ids))
+        if scope == "everyone":
+            if any(m.sender_id != request.user.id for m in msgs):
+                return Response(
+                    {"detail": "حذف برای همه فقط برای پیام‌های خودت ممکن است."}, status=403
+                )
+            found_ids = [m.id for m in msgs]
+            for m in msgs:
+                if m.attachment:
+                    m.attachment.delete(save=False)
+                m.delete()
+            participant_ids = _conversation_participant_ids(conv)
+            for mid in found_ids:
+                push_to_users(
+                    participant_ids,
+                    {
+                        "type": "message.deleted",
+                        "conversation_id": conv.id,
+                        "message_id": mid,
+                    },
+                )
+            return Response(status=204)
+
+        # «برای من» — مخفی‌سازی هر پیامی از این گفتگو برای خودِ کاربر
+        for m in msgs:
+            m.deleted_for.add(request.user)
         return Response(status=204)
 
 

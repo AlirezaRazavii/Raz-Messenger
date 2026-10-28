@@ -69,8 +69,16 @@ export async function apiEditMessage(messageId, text) {
   return unwrap(api.patch(`/chat/messages/${messageId}/`, { text }));
 }
 
-export async function apiDeleteMessage(messageId) {
-  return unwrap(api.delete(`/chat/messages/${messageId}/`));
+// scope: "me" = مخفی برای خودم (حتی پیام طرف مقابل)؛ "everyone" = حذف دوطرفه (فقط پیام خودم)
+export async function apiDeleteMessage(messageId, scope = "everyone") {
+  return unwrap(api.delete(`/chat/messages/${messageId}/`, { data: { scope } }));
+}
+
+// حذف دسته‌ای — همان دو scope
+export async function apiBulkDeleteMessages(conversationId, ids, scope = "me") {
+  return unwrap(
+    api.post(`/chat/conversations/${conversationId}/messages/bulk-delete/`, { ids, scope })
+  );
 }
 
 export async function apiSearchUsers(q) {
