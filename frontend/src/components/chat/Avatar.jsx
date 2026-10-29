@@ -1,69 +1,53 @@
-import { useState } from "react";
-import { Users } from "lucide-react";
+import { useEffect, useState } from "react";
+import { apiUrl } from "../../api/client";
 
-// دامنهٔ بک‌اند — همان قاعدهٔ client.js؛ برای <img> که هدر JWT ندارد
-const BACKEND = `${window.location.protocol}//${window.location.hostname}:8000`;
-export function absUrl(path) {
-  if (!path) return null;
-  return path.startsWith("http") ? path : BACKEND + path;
+// آواتار کاربر — عکس پروفایل اگر باشد، وگرنه دایره‌ی رنگی با حرف اول نام.
+// رنگ دایره از نام کاربری ساخته می‌شود تا برای هر نفر همیشه یکی باشد.
+const COLORS = [
+  "bg-emerald-500",
+  "bg-sky-500",
+  "bg-violet-500",
+  "bg-rose-500",
+  "bg-amber-500",
+  "bg-teal-500",
+  "bg-indigo-500",
+  "bg-fuchsia-500",
+];
+
+function colorFor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
+  return COLORS[h % COLORS.length];
 }
-
-// نام نمایشی کاربر — خالی بود یعنی همان نام کاربری
-export function nameOf(user) {
-  return user?.display_name?.trim() || user?.username || "";
-}
-
-export function initialOf(name) {
-  const n = (name || "").trim();
-  return n ? n.charAt(0).toUpperCase() : "؟";
-}
-
-const SIZES = {
-  xs: "h-7 w-7 text-[11px]",
-  sm: "h-9 w-9 text-xs",
-  md: "h-10 w-10 text-sm",
-  lg: "h-11 w-11 text-base",
-  xl: "h-20 w-20 text-2xl",
-};
-
-const DOTS = { xs: "h-2 w-2", sm: "h-2.5 w-2.5", md: "h-3 w-3", lg: "h-3 w-3", xl: "h-4 w-4" };
 
 /**
- * آواتار مشترک اپ — برای هر جایی که کاربر یا گروه دیده می‌شود.
- *
- * user: {avatar_url, username, display_name}  |  group: true → آواتار گروهی
- * size: xs|sm|md|lg|xl  |  online: undefined=بدون نقطه، true/false=با نقطهٔ وضعیت
+ * user: آبجکت با username/display_name/avatar_url (یا فقط username)
+ * className: اندازه و استایل ظاهری مثل "h-11 w-11 text-base"
  */
-export default function Avatar({ user, group, size = "md", online, className = "" }) {
+export default function Avatar({ user, name, src, className = "h-10 w-10", title }) {
+  const effective = name || (user?.display_name ?? "").toString().trim() || user?.username || "؟";
+  const url = src || user?.avatar_url || null;
   const [broken, setBroken] = useState(false);
-  const url = !group && user?.avatar_url && !broken ? absUrl(user.avatar_url) : null;
-  const name = nameOf(user);
+  useEffect(() => setBroken(false), [url]);
 
+  if (url && !broken) {
+    return (
+      <img
+        src={apiUrl(url)}
+        alt={effective}
+        title={title}
+        draggable={false}
+        onError={() => setBroken(true)}
+        className={`rounded-full object-cover ${className}`}
+      />
+    );
+  }
   return (
-    <span className={`relative inline-grid shrink-0 place-items-center ${SIZES[size]} ${className}`}>
-      {url ? (
-        <img
-          src={url}
-          onError={() => setBroken(true)}
-          alt={name}
-          className="h-full w-full rounded-full object-cover"
-        />
-      ) : (
-        <span
-          className={`grid h-full w-full place-items-center rounded-full font-bold ${
-            group ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"
-          }`}
-        >
-          {group ? <Users className="h-1/2 w-1/2" /> : initialOf(name)}
-        </span>
-      )}
-      {online !== undefined && !group && (
-        <span
-          className={`absolute bottom-0 left-0 ${DOTS[size]} rounded-full border-2 border-white ${
-            online ? "bg-emerald-500" : "bg-slate-300"
-          }`}
-        />
-      )}
-    </span>
+    <div
+      title={title}
+      className={`grid shrink-0 place-items-center rounded-full font-bold text-white ${colorFor(user?.username || effective)} ${className}`}
+    >
+      {effective.trim().charAt(0).toUpperCase()}
+    </div>
   );
 }
