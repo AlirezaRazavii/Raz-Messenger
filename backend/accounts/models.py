@@ -19,6 +19,30 @@ class User(AbstractUser):
     """کاربر پیام‌رسان — ورود فقط با نام کاربری و رمز، ثبت‌نام فقط با کد دعوت."""
 
     email = models.EmailField("ایمیل", unique=True)
+
+    # --- پروفایل (بسته پروفایل) ---
+    username = models.CharField(
+        "نام کاربری",
+        max_length=32,
+        unique=True,
+        help_text="۴ تا ۳۲ کاراکتر: حروف کوچک انگلیسی، رقم و _",
+        error_messages={"unique": "این نام کاربری قبلاً ثبت شده است."},
+        validators=[
+            RegexValidator(
+                regex=r"^[a-z0-9_]{4,32}$",
+                message="نام کاربری فقط می‌تواند شامل حروف کوچک انگلیسی، رقم و _ باشد (۴ تا ۳۲ کاراکتر).",
+            ),
+        ],
+    )
+    display_name = models.CharField("نام نمایشی", max_length=64, blank=True)  # خالی = همان username
+    bio = models.CharField("بایو", max_length=160, blank=True)
+    avatar = models.ImageField(
+        "عکس پروفایل", upload_to=_avatar_upload_to, null=True, blank=True
+    )  # با Pillow مربع و کوچک می‌شود — نام فایل تصادفی است
+    avatar_ts = models.DateTimeField(
+        "زمان آخرین تغییر عکس", null=True, blank=True
+    )  # برای cache-busting مرورگر (?v=)
+
     used_invite = models.ForeignKey(
         "accounts.InviteCode",
         verbose_name="کد دعوت استفاده‌شده",
