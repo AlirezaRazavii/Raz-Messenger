@@ -26,6 +26,20 @@ GROUP_NAME_MAX = 128
 GROUP_MAX_MEMBERS = 200
 
 
+def _user_brief(user):
+    """خلاصه‌ی پروفایل کاربر برای همه‌جا — نام نمایشی + آواتار + @نام‌کاربری."""
+    if user is None:
+        return None
+    from accounts.serializers import avatar_url_of
+
+    return {
+        "id": user.id,
+        "username": user.username,
+        "display_name": user.display_name,
+        "avatar_url": avatar_url_of(user),
+    }
+
+
 def _get_my_conversation(user, conv_id):
     """فقط اگر کاربر عضو گفتگو باشد برمی‌گرداند؛ وگرنه None (404 — بدون لو دادن وجود گفتگو)."""
     return Conversation.objects.filter(id=conv_id, participants=user).first()
@@ -110,6 +124,7 @@ def _serialize_conversations(user, conversations):
                 "text": lm.text,
                 "sender_id": lm.sender_id,
                 "sender_username": lm.sender.username,
+                "sender_display_name": lm.sender.display_name,
                 "created_at": lm.created_at,
                 "kind": lm.kind,
                 "call": (
@@ -155,19 +170,14 @@ def _serialize_conversations(user, conversations):
 
         other = other_by_conv.get(c.id)
         pres = presence.get(other.id, {}) if other else {}
+        other_data = _user_brief(other) if other else None
+        if other_data is not None:
+            other_data["online"] = pres.get("online", False)
+            other_data["last_seen"] = pres.get("last_seen")
         data.append(
             {
                 "id": c.id,
-                "other_user": (
-                    {
-                        "id": other.id,
-                        "username": other.username,
-                        "online": pres.get("online", False),
-                        "last_seen": pres.get("last_seen"),
-                    }
-                    if other
-                    else None
-                ),
+                "other_user": other_data,
                 "group": None,
                 "last_message": last_message,
                 "unread_count": unread,
@@ -237,6 +247,7 @@ def _serialize_group(user, group, include_members=False):
                 "text": lm.text,
                 "sender_id": lm.sender_id,
                 "sender_username": lm.sender.username,
+                "sender_display_name": lm.sender.display_name,
                 "created_at": lm.created_at,
             }
             if lm
@@ -245,11 +256,15 @@ def _serialize_group(user, group, include_members=False):
         "updated_at": conv.updated_at,
     }
     if include_members:
+        from accounts.serializers import avatar_url_of
+
         presence = get_presence([p.user_id for p in members_qs])
         data["members"] = [
             {
                 "id": p.user_id,
                 "username": p.user.username,
+                "display_name": p.user.display_name,
+                "avatar_url": avatar_url_of(p.user),
                 "role": p.role,
                 "online": presence.get(p.user_id, {}).get("online", False),
                 "joined_at": p.joined_at,
@@ -415,8 +430,7 @@ class GroupMemberView(APIView):
         presence = get_presence([other.id])
         return Response(
             {
-                "id": other.id,
-                "username": other.username,
+                **_user_brief(other),
                 "role": "member",
                 "online": presence.get(other.id, {}).get("online", False),
             },
@@ -481,6 +495,7 @@ class UserSearchView(APIView):
                 Q(username__icontains=q)
                 | Q(first_name__icontains=q)
                 | Q(last_name__icontains=q)
+                | Q(display_name__icontains=q)
             )
             .exclude(id=request.user.id)
             .order_by("username")[:10]
@@ -489,14 +504,38 @@ class UserSearchView(APIView):
         return Response(
             [
                 {
-                    "id": u.id,
-                    "username": u.username,
-                    "first_name": u.first_name,
-                    "last_name": u.last_name,
+                    **_user_brief(u),
                     "online": presence.get(u.id, {}).get("online", False),
                 }
                 for u in users
             ]
+        )
+
+
+class UserProfileView(APIView):
+    """کارت پروفایل کاربر دیگر — فقط اگر گفتگوی مشترک داشته باشی.
+
+    مثل تلگرام/واتساپ: با کلیک روی سرِ گفتگو، نام و @نام‌کاربری و بایو و
+    وضعیت آنلاین طرف مقابل دیده می‌شود.
+    """
+
+    def get(self, request, user_id):
+        target = User.objects.filter(id=user_id).first()
+        if target is None:
+            return Response({"detail": "کاربر پیدا نشد."}, status=404)
+        shares = Conversation.objects.filter(
+            participants=request.user
+        ).filter(participants=target).exists()
+        if not shares:
+            return Response({"detail": "کاربر پیدا نشد."}, status=404)
+        pres = get_presence([target.id]).get(target.id, {})
+        return Response(
+            {
+                **_user_brief(target),
+                "bio": target.bio,
+                "online": pres.get("online", False),
+                "last_seen": pres.get("last_seen"),
+            }
         )
 
 
@@ -881,8 +920,7 @@ class CallLogListView(APIView):
                     "id": log.id,
                     "conversation_id": log.conversation_id,
                     "peer": {
-                        "id": peer.id,
-                        "username": peer.username,
+                        **_user_brief(peer),
                         "online": pres.get("online", False),
                     },
                     "outgoing": log.caller_id == request.user.id,

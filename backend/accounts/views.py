@@ -1,12 +1,17 @@
 from datetime import timedelta
+import io
 
 from django.conf import settings
 from django.contrib.auth import authenticate, get_user_model
 from django.core.mail import send_mail
+from django.core.files.base import ContentFile
 from django.db import transaction
+from django.http import FileResponse
 from django.utils import timezone
 
+from PIL import Image
 from rest_framework import generics, permissions, status
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 from rest_framework.views import APIView
@@ -22,6 +27,7 @@ from .serializers import (
     ChangePasswordRequestSerializer,
     ForgotPasswordSerializer,
     LoginSerializer,
+    ProfileUpdateSerializer,
     RegisterSerializer,
     ResetPasswordSerializer,
     UserSerializer,
@@ -32,6 +38,9 @@ User = get_user_model()
 MAX_FAILED_LOGINS = 5
 LOCKOUT_MINUTES = 15
 CODE_TTL_MINUTES = 10
+
+MAX_AVATAR_MB = 5
+AVATAR_SIZE = 512  # مربع ۵۱۲×۵۱۲ — برای دایره‌های اپ کاملاً کافی است
 
 
 # ---------- توابع کمکی ----------
@@ -87,6 +96,36 @@ def create_and_send_code(user, purpose):
         return False, "ارسال ایمیل ناموفق بود؛ کمی بعد دوباره تلاش کنید."
 
 
+def _broadcast_profile_updated(user):
+    """اعلام تغییر پروفایل به همه‌ی کسانی که گفتگوی مشترک دارند.
+
+    فرانت با دیدن این رویداد لیست گفتگوها (و اعضای گروهِ باز) را تازه می‌کند.
+    """
+    try:
+        from chat.models import Participant
+        from chat.push import push_to_users
+
+        partner_ids = list(
+            Participant.objects.filter(
+                conversation__participants=user
+            )
+            .exclude(user=user)
+            .values_list("user_id", flat=True)
+            .distinct()
+        )
+        push_to_users(
+            partner_ids + [user.id],
+            {
+                "type": "user.updated",
+                "user_id": user.id,
+                "username": user.username,
+                "display_name": user.display_name,
+            },
+        )
+    except Exception:
+        pass  # پخش زنده اختیاری است — ذخیره در دیتابیس مهم است
+
+
 # ---------- ثبت‌نام ----------
 
 class RegisterView(generics.CreateAPIView):
@@ -128,14 +167,23 @@ class RegisterView(generics.CreateAPIView):
         )
 
 
-class MeView(generics.RetrieveAPIView):
-    """اطلاعات کاربر واردشده."""
+class MeView(generics.RetrieveUpdateAPIView):
+    """اطلاعات کاربر واردشده — GET برای دیدن، PATCH برای ویرایش پروفایل."""
 
     serializer_class = UserSerializer
     permission_classes = [permissions.IsAuthenticated]
 
     def get_object(self):
         return self.request.user
+
+    def patch(self, request, *args, **kwargs):
+        serializer = ProfileUpdateSerializer(
+            request.user, data=request.data, partial=True
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        _broadcast_profile_updated(request.user)
+        return Response(UserSerializer(request.user).data)
 
 
 # ---------- ورود / خروج ----------
@@ -339,4 +387,87 @@ class ChangePasswordConfirmView(APIView):
         tokens = _apply_new_password(request.user, data["new_password"])
         return Response(
             {"user": UserSerializer(request.user).data, **tokens}
+        )
+
+
+# ---------- آواتار (بسته پروفایل) ----------
+
+class MeAvatarView(APIView):
+    """آپلود (POST) یا حذف (DELETE) عکس پروفایل.
+
+    عکس با Pillow مربع می‌شود، به ۵۱۲×۵۱۲ کوچک می‌شود و به‌صورت JPEG
+    ذخیره می‌شود — پسوند و محتوای اصلی هیچ اهمیتی ندارد.
+    """
+
+    permission_classes = [permissions.IsAuthenticated]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        f = request.FILES.get("avatar")
+        if f is None:
+            return Response({"avatar": ["فایلی ارسال نشد."]}, status=400)
+        if f.size > MAX_AVATAR_MB * 1024 * 1024:
+            return Response(
+                {"avatar": [f"حجم عکس باید کمتر از {MAX_AVATAR_MB} مگابایت باشد."]},
+                status=400,
+            )
+        try:
+            img = Image.open(f)
+            img.verify()  # مطمئن می‌شود واقعاً عکس است
+            f.seek(0)
+            img = Image.open(f).convert("RGB")
+        except Exception:
+            return Response(
+                {"avatar": ["فایل ارسالی عکس معتبری نیست."]}, status=400
+            )
+
+        # برش مربع از مرکز + کوچک‌سازی
+        w, h = img.size
+        side = min(w, h)
+        left = (w - side) // 2
+        top = (h - side) // 2
+        img = img.crop((left, top, left + side, top + side)).resize(
+            (AVATAR_SIZE, AVATAR_SIZE), Image.LANCZOS
+        )
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=88)
+        buf.seek(0)
+
+        request.user.avatar.delete(save=False)  # فایل قبلی پاک شود
+        request.user.avatar.save(
+            "avatar.jpg", ContentFile(buf.read()), save=False
+        )
+        request.user.avatar_ts = timezone.now()
+        request.user.save(update_fields=["avatar", "avatar_ts"])
+        _broadcast_profile_updated(request.user)
+        return Response(UserSerializer(request.user).data)
+
+    def delete(self, request):
+        if request.user.avatar:
+            request.user.avatar.delete(save=False)
+            request.user.avatar = None
+            request.user.avatar_ts = None
+            request.user.save(update_fields=["avatar", "avatar_ts"])
+            _broadcast_profile_updated(request.user)
+        return Response(UserSerializer(request.user).data)
+
+
+class UserAvatarServeView(APIView):
+    """سرو عمومی عکس پروفایل.
+
+    تگ <img> نمی‌تواند هدر JWT بفرستد؛ مثل CDNهای عمومی دیگران، آواتار
+    بدون توکن سرو می‌شود — نام فایل تصادفی است و فقط با دانستن شناسه
+    کاربر قابل دسترسی است (مثل واتساپ/تلگرام که آواتار را از CDN می‌گیرند).
+    """
+
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+    throttle_classes = []
+
+    def get(self, request, user_id):
+        user = User.objects.filter(id=user_id).first()
+        if user is None or not user.avatar:
+            return Response(status=404)
+        return FileResponse(
+            user.avatar.open("rb"), content_type="image/jpeg"
         )

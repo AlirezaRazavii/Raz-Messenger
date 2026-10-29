@@ -73,8 +73,11 @@ function notifyIncoming(m, convId, isActive) {
   playDing();
 
   const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
-  const title = conv?.group?.name || conv?.other_user?.username || "گفتگوی جدید";
-  const sender = m.sender?.username && conv?.group ? `${m.sender.username}: ` : "";
+  const other = conv?.other_user;
+  const title = conv?.group?.name || other?.display_name?.trim() || other?.username || "گفتگوی جدید";
+  const sender = m.sender?.username && conv?.group
+    ? `${m.sender.display_name?.trim() || m.sender.username}: `
+    : "";
   const body = sender + previewOf(m);
 
   // پاپ‌آپ داخل خود اپ — به مجوز مرورگر و آدرس HTTPS/localhost نیازی ندارد؛
@@ -185,8 +188,23 @@ const useChatStore = create((set, get) => ({
       case "group.updated": get()._applyGroupUpdated(ev); break;
       case "group.deleted": get()._applyGroupDeleted(ev); break;
       case "call.signal": get()._applyCallSignal(ev); break;
+      // تغییر پروفایل کسی که گفتگو داریم — لیست و اعضای گروه تازه شود
+      case "user.updated": get()._applyUserUpdated(ev); break;
       default: break;
     }
+  },
+
+  _applyUserUpdated: (ev) => {
+    const uid = ev.user_id;
+    if (!uid) return;
+    // ۱) گفتگوهای خصوصی با همان کاربر — نام/آواتار گفتگو از نو خوانده شود
+    const touchesPrivate = get().conversations.some(
+      (c) => !c.group && c.other_user?.id === uid
+    );
+    if (touchesPrivate) get().loadConversations();
+    // ۲) اگر گروهِ باز داریم، اعضایش (نام/آواتار/آنلاین) از نو بخوانده شود
+    const ag = get().activeGroup;
+    if (ag?.id) get().loadActiveGroup(ag.id);
   },
 
   _applyPresence: (userId, online) => {

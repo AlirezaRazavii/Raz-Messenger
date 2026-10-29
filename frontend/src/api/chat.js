@@ -85,6 +85,13 @@ export async function apiSearchUsers(q) {
   return unwrap(api.get("/chat/users/", { params: { q } }));
 }
 
+// ---------- پروفایل (بسته پروفایل) ----------
+
+// کارت پروفایل کاربر دیگر — فقط با گفتگوی مشترک ممکن است
+export async function apiGetUserProfile(userId) {
+  return unwrap(api.get(`/chat/users/${userId}/profile/`));
+}
+
 // ---------- گروه‌ها (فاز ۴) ----------
 
 export async function apiCreateGroup(name, members = []) {

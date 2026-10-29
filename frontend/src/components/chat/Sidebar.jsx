@@ -3,6 +3,7 @@ import { BellOff, BellRing, Check, History, PhoneIncoming, PhoneOutgoing, Plus, 
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
 import { apiListCalls, extractError } from "../../api/chat";
+import Avatar, { nameOf } from "./Avatar";
 
 function initial(name) {
   return (name || "؟").trim().charAt(0).toUpperCase();
@@ -18,7 +19,7 @@ function fmtTime(iso) {
 }
 
 function convTitle(conv) {
-  return conv.group?.name || conv.other_user?.username || "گفتگو";
+  return conv.group?.name || nameOf(conv.other_user) || "گفتگو";
 }
 
 function callStatusText(status) {
@@ -50,8 +51,8 @@ function ConversationItem({ conv, active, onClick }) {
   const preview = last
     ? last.kind === "call"
       ? callPreview(last.call)
-      : (isGroup && last.sender_id !== me && last.sender_username
-        ? `${last.sender_username}: `
+      : (isGroup && last.sender_id !== me && (last.sender_display_name || last.sender_username)
+        ? `${last.sender_display_name || last.sender_username}: `
         : "") +
       (last.text ||
         (last.attachment_kind === "image"
@@ -73,21 +74,7 @@ function ConversationItem({ conv, active, onClick }) {
       }`}
     >
       <div className="relative shrink-0">
-        <div
-          className={`grid h-11 w-11 place-items-center rounded-full text-base font-bold ${
-            isGroup ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"
-          }`}
-        >
-          {isGroup ? <Users className="h-5 w-5" /> : initial(other.username)}
-        </div>
-        {!isGroup && (
-          <span
-            className={`absolute bottom-0 left-0 h-3 w-3 rounded-full border-2 border-white ${
-              online ? "bg-emerald-500" : "bg-slate-300"
-            }`}
-            title={online ? "متصل" : "آفلاین"}
-          />
-        )}
+        <Avatar user={other} group={isGroup} size="lg" online={isGroup ? undefined : Boolean(other.online)} />
       </div>
 
       <div className="min-w-0 flex-1">
@@ -202,10 +189,11 @@ function NewChatDialog({ onClose }) {
                 disabled={creating}
                 className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-right hover:bg-slate-50 disabled:opacity-50"
               >
-                <div className="grid h-9 w-9 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-600">
-                  {initial(u.username)}
-                </div>
-                <span className="truncate text-sm font-medium text-slate-700">{u.username}</span>
+                <Avatar user={u} size="sm" />
+                <span className="min-w-0 flex-1">
+                  <span className="block truncate text-sm font-medium text-slate-700">{nameOf(u)}</span>
+                  <span className="block truncate text-[11px] text-slate-400" dir="ltr">@{u.username}</span>
+                </span>
               </button>
             ))}
           </div>
@@ -303,7 +291,7 @@ function NewGroupDialog({ onClose }) {
                   key={u.id}
                   className="flex items-center gap-1 rounded-full bg-emerald-50 px-2.5 py-1 text-xs font-medium text-emerald-700"
                 >
-                  {u.username}
+                  {nameOf(u)}
                   <button onClick={() => toggle(u)} className="text-emerald-400 hover:text-emerald-600" title="حذف از انتخاب">
                     <X className="h-3 w-3" />
                   </button>
@@ -341,10 +329,11 @@ function NewGroupDialog({ onClose }) {
                     picked ? "bg-emerald-50" : "hover:bg-slate-50"
                   }`}
                 >
-                  <div className="grid h-9 w-9 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-600">
-                    {initial(u.username)}
-                  </div>
-                  <span className="min-w-0 flex-1 truncate text-sm font-medium text-slate-700">{u.username}</span>
+                  <Avatar user={u} size="sm" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm font-medium text-slate-700">{nameOf(u)}</span>
+                    <span className="block truncate text-[11px] text-slate-400" dir="ltr">@{u.username}</span>
+                  </span>
                   {picked && <Check className="h-4 w-4 shrink-0 text-emerald-600" />}
                 </button>
               );
@@ -441,11 +430,9 @@ function CallsPanel({ onClose }) {
                 }}
                 className="flex w-full items-center gap-3 rounded-xl px-2 py-2.5 text-right transition-colors hover:bg-slate-50"
               >
-                <div className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-600">
-                  {initial(c.peer?.username)}
-                </div>
+                <Avatar user={c.peer} size="md" />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-sm font-medium text-slate-800">{c.peer?.username ?? "کاربر"}</div>
+                  <div className="truncate text-sm font-medium text-slate-800">{nameOf(c.peer) || "کاربر"}</div>
                   <div className={`mt-0.5 flex items-center gap-1 text-xs ${ok ? "text-slate-400" : "text-red-500"}`}>
                     <DirIcon className="h-3.5 w-3.5" />
                     <span>

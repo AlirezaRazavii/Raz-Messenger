@@ -2,6 +2,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from django.contrib.auth.validators import UnicodeUsernameValidator
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.core.validators import RegexValidator
 
 from rest_framework import serializers
 from rest_framework.validators import UniqueValidator
@@ -11,13 +12,70 @@ from .models import InviteCode
 User = get_user_model()
 
 
+def avatar_url_of(user):
+    """نشانی عمومی آواتار — فقط اگر عکس داشته باشد؛ نسخه برای cache-busting."""
+    if not user or not user.avatar:
+        return None
+    v = int(user.avatar_ts.timestamp()) if user.avatar_ts else 0
+    return f"/api/auth/users/{user.id}/avatar/?v={v}"
+
+
 class UserSerializer(serializers.ModelSerializer):
     """نمایش عمومی اطلاعات کاربر."""
 
+    display_name = serializers.CharField(read_only=True)
+    bio = serializers.CharField(read_only=True)
+    avatar_url = serializers.SerializerMethodField()
+
     class Meta:
         model = User
-        fields = ("id", "username", "email", "first_name", "last_name", "date_joined")
+        fields = (
+            "id", "username", "email", "first_name", "last_name", "date_joined",
+            "display_name", "bio", "avatar_url",
+        )
         read_only_fields = fields
+
+    def get_avatar_url(self, obj):
+        return avatar_url_of(obj)
+
+
+class ProfileUpdateSerializer(serializers.ModelSerializer):
+    """ویرایش پروفایل خود — نام نمایشی، بایو و نام کاربری (اختیاری هر کدام).
+
+    نام کاربری شناسه یکتاست: فقط حروف کوچک لاتین، رقم و _ (مثل تلگرام).
+    """
+
+    display_name = serializers.CharField(
+        required=False, allow_blank=True, max_length=64, label="نام نمایشی", trim_whitespace=True
+    )
+    bio = serializers.CharField(
+        required=False, allow_blank=True, max_length=160, label="درباره من", trim_whitespace=True
+    )
+    username = serializers.CharField(
+        required=False,
+        min_length=4,
+        max_length=32,
+        validators=[
+            RegexValidator(
+                regex=r"^[a-z0-9_]+$",
+                message="نام کاربری فقط حروف کوچک انگلیسی، رقم و _ می‌تواند باشد.",
+            ),
+            UniqueValidator(
+                queryset=User.objects.all(),
+                message="این نام کاربری قبلاً ثبت شده است.",
+            ),
+        ],
+    )
+
+    class Meta:
+        model = User
+        fields = ("display_name", "bio", "username")
+
+    def validate_username(self, value):
+        value = value.strip().lower()
+        if value in ("me", "admin", "root", "api", "null", "undefined"):
+            raise serializers.ValidationError("این نام کاربری قابل استفاده نیست.")
+        return value
 
 
 class RegisterSerializer(serializers.ModelSerializer):

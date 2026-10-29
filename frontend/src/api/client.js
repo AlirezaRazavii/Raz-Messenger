@@ -53,6 +53,15 @@ client.interceptors.response.use(
   }
 )
 
+// دامنهٔ بک‌اند به‌صورت مطلق — برای لینک‌هایی که خارج از axios هستند (مثل <img>)
+export const backendOrigin = `${window.location.protocol}//${window.location.hostname}:8000`
+
+// تبدیل مسیر نسبی API (مثل /api/auth/users/1/avatar/) به URL کامل
+export function absUrl(path) {
+  if (!path) return null
+  return path.startsWith('http') ? path : backendOrigin + path
+}
+
 // تبدیل خطاهای DRF به پیام‌های فارسی قابل نمایش در فرم‌ها
 export function parseApiError(error) {
   const data = error?.response?.data

@@ -1,5 +1,7 @@
+import os
 import secrets
 import string
+import uuid
 
 from django.contrib.auth.models import AbstractUser
 from django.conf import settings
@@ -8,10 +10,26 @@ from django.db import models
 from django.utils import timezone
 
 
+def _avatar_upload_to(instance, filename):
+    """مسیر ذخیره آواتار: نام تصادفی — همیشه JPEG چون با Pillow نرمال می‌شود."""
+    return f"avatars/{uuid.uuid4().hex}.jpg"
+
+
 class User(AbstractUser):
     """کاربر پیام‌رسان — ورود فقط با نام کاربری و رمز، ثبت‌نام فقط با کد دعوت."""
 
     email = models.EmailField("ایمیل", unique=True)
+    # --- پروفایل (بسته پروفایل) ---
+    display_name = models.CharField(
+        "نام نمایشی", max_length=64, blank=True, default=""
+    )  # اسمی که بقیه می‌بینند؛ خالی = همان نام کاربری
+    bio = models.CharField("درباره من", max_length=160, blank=True, default="")
+    avatar = models.ImageField(
+        "عکس پروفایل", upload_to=_avatar_upload_to, null=True, blank=True
+    )  # با Pillow مربع و کوچک می‌شود — نام فایل تصادفی است
+    avatar_ts = models.DateTimeField(
+        "زمان آخرین تغییر آواتار", null=True, blank=True
+    )  # برای cache-busting مرورگر (?v=)
     used_invite = models.ForeignKey(
         "accounts.InviteCode",
         verbose_name="کد دعوت استفاده‌شده",

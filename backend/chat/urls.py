@@ -6,6 +6,7 @@ app_name = "chat"
 
 urlpatterns = [
     path("users/", views.UserSearchView.as_view(), name="user-search"),
+    path("users/<int:user_id>/profile/", views.UserProfileView.as_view(), name="user-profile"),
     path("conversations/", views.ConversationListCreateView.as_view(), name="conversation-list"),
     path(
         "conversations/<int:conv_id>/messages/",

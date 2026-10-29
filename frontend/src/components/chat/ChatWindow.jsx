@@ -9,6 +9,8 @@ import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
 import { extractError, apiDownloadAttachment } from "../../api/chat";
 import useCallStore from "../../store/call";
+import Avatar, { nameOf } from "./Avatar";
+import ProfileCard from "./ProfileCard";
 
 const EMPTY_BUCKET = { list: [], hasMore: false, loading: false };
 const MAX_UPLOAD_MB = 25;
@@ -398,20 +400,16 @@ function ForwardDialog({ message, onClose }) {
                   disabled={busyId != null}
                   className="flex w-full items-center gap-3 rounded-xl px-2 py-2 text-right hover:bg-slate-50 disabled:opacity-50"
                 >
-                  <div
-                    className={`grid h-9 w-9 shrink-0 place-items-center rounded-full text-sm font-bold ${
-                      isGroup ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"
-                    }`}
-                  >
-                    {isGroup ? <Users className="h-4 w-4" /> : initial(c.other_user?.username)}
+                  <div className="shrink-0">
+                    <Avatar user={c.other_user} group={isGroup} size="sm" />
                   </div>
                   <div className="min-w-0 flex-1">
                     <div className="truncate text-sm font-medium text-slate-700">
-                      {c.group?.name || c.other_user?.username || "گفتگو"}
+                      {c.group?.name || nameOf(c.other_user) || "گفتگو"}
                     </div>
                     <div className="truncate text-xs text-slate-400">
                       {isGroup && c.last_message?.sender_username
-                        ? `${c.last_message.sender_username}: ${c.last_message?.text ?? ""}`
+                        ? `${c.last_message.sender_display_name || c.last_message.sender_username}: ${c.last_message?.text ?? ""}`
                         : c.last_message?.text ?? "بدون پیام"}
                     </div>
                   </div>
@@ -616,19 +614,12 @@ function GroupMembersDialog({ onClose }) {
             {(group.members ?? []).map((m) => (
               <div key={m.id} className="flex items-center gap-3 rounded-xl px-2 py-2 hover:bg-slate-50">
                 <div className="relative shrink-0">
-                  <div className="grid h-9 w-9 place-items-center rounded-full bg-slate-200 text-sm font-bold text-slate-600">
-                    {initial(m.username)}
-                  </div>
-                  <span
-                    className={`absolute bottom-0 left-0 h-2.5 w-2.5 rounded-full border-2 border-white ${
-                      m.online ? "bg-emerald-500" : "bg-slate-300"
-                    }`}
-                  />
+                  <Avatar user={m} size="sm" online={m.online} />
                 </div>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-1.5">
                     <span className="truncate text-sm font-medium text-slate-700">
-                      {m.username}
+                      {nameOf(m) || m.username}
                       {m.id === myId && <span className="text-slate-400"> (تو)</span>}
                     </span>
                     {m.role === "owner" && <Crown className="h-3.5 w-3.5 shrink-0 text-amber-500" title="سازنده گروه" />}
@@ -672,10 +663,11 @@ function GroupMembersDialog({ onClose }) {
                       disabled={adding}
                       className="flex w-full items-center gap-3 rounded-xl px-2 py-1.5 text-right hover:bg-slate-50 disabled:opacity-50"
                     >
-                      <div className="grid h-7 w-7 place-items-center rounded-full bg-slate-200 text-xs font-bold text-slate-600">
-                        {initial(u.username)}
-                      </div>
-                      <span className="truncate text-sm text-slate-700">{u.username}</span>
+                  <Avatar user={u} size="xs" className="shrink-0" />
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-sm text-slate-700">{nameOf(u) || u.username}</span>
+                    <span className="block truncate text-[11px] text-slate-400" dir="ltr">@{u.username}</span>
+                  </span>
                       <UserPlus className="mr-auto h-4 w-4 shrink-0 text-emerald-600" />
                     </button>
                   ))}
@@ -742,6 +734,7 @@ export default function ChatWindow() {
   const [pending, setPending] = useState(null); // { file, kind, url }
   const [lightbox, setLightbox] = useState(null);
   const [membersOpen, setMembersOpen] = useState(false);
+  const [profileOpen, setProfileOpen] = useState(false);
   const [recording, setRecording] = useState(false);
   const [recSecs, setRecSecs] = useState(0);
   const [tick, setTick] = useState(0);
@@ -797,7 +790,11 @@ export default function ChatWindow() {
     for (const [uid, until] of Object.entries(typingMap)) {
       if (until <= now) continue;
       if (myId != null && Number(uid) === myId) continue;
-      names.push(members.find((m) => m.id === Number(uid))?.username ?? "عضو گروه");
+      names.push(
+        members.find((m) => m.id === Number(uid))?.display_name ||
+          members.find((m) => m.id === Number(uid))?.username ||
+          "عضو گروه"
+      );
     }
     return names;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1462,7 +1459,7 @@ export default function ChatWindow() {
             <>
               {isGroup && !mine && (
                 <div className="mb-0.5 text-[11px] font-bold text-emerald-700">
-                  {m.sender?.username ?? "کاربر"}
+                  {nameOf(m.sender) || m.sender?.username || "کاربر"}
                 </div>
               )}
               {m.reply_to && (
@@ -1479,7 +1476,7 @@ export default function ChatWindow() {
                       : "border-emerald-500 bg-emerald-50 text-slate-600 hover:bg-emerald-100"
                   }`}
                 >
-                  <span className="font-bold">{m.reply_to.sender_username ?? "کاربر"}: </span>
+                  <span className="font-bold">{m.reply_to.sender_display_name || m.reply_to.sender_username || "کاربر"}: </span>
                   {m.reply_to.text}
                 </div>
               )}
@@ -1588,13 +1585,16 @@ export default function ChatWindow() {
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-slate-50">
+      {/* کارت پروفایل — با کلیک روی سرِ گفتگوی خصوصی باز می‌شود */}
+      {profileOpen && !isGroup && other?.id != null && (
+        <ProfileCard userId={other.id} onClose={() => setProfileOpen(false)} />
+      )}
+
       {/* هدر گفتگو */}
       <div
-        onClick={isGroup ? () => setMembersOpen(true) : undefined}
-        title={isGroup ? "دیدن اعضای گروه" : undefined}
-        className={`flex shrink-0 items-center gap-3 border-b border-slate-200 bg-white px-3 py-2.5 ${
-          isGroup ? "cursor-pointer hover:bg-slate-50" : ""
-        }`}
+        onClick={isGroup ? () => setMembersOpen(true) : () => setProfileOpen(true)}
+        title={isGroup ? "دیدن اعضای گروه" : "دیدن پروفایل"}
+        className="flex shrink-0 cursor-pointer items-center gap-3 border-b border-slate-200 bg-white px-3 py-2.5 transition-colors hover:bg-slate-50"
       >
         <button
           onClick={(e) => {
@@ -1608,27 +1608,17 @@ export default function ChatWindow() {
         </button>
 
         <div className="relative shrink-0">
-          <div
-            className={`grid h-10 w-10 place-items-center rounded-full font-bold ${
-              isGroup ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"
-            }`}
-          >
-            {isGroup ? <Users className="h-5 w-5" /> : initial(other.username)}
-          </div>
-          {!isGroup && (
-            <span
-              className={`absolute bottom-0 left-0 h-3 w-3 rounded-full border-2 border-white ${
-                other.online ? "bg-emerald-500" : "bg-slate-300"
-              }`}
-            />
-          )}
+          <Avatar user={other} group={isGroup} size="md" online={isGroup ? undefined : Boolean(other.online)} />
         </div>
 
         <div className="min-w-0 flex-1 leading-tight">
           <div className="truncate font-bold text-slate-800">
-            {isGroup ? groupName : (other.username ?? "کاربر")}
+            {isGroup ? groupName : (nameOf(other) || "کاربر")}
           </div>
           <div className="h-4 truncate text-xs text-slate-500">
+            {!isGroup && other?.username && (
+              <span dir="ltr" className="ml-1 font-medium text-emerald-700/80">@{other.username}</span>
+            )}
             {typingNames.length > 0 ? (
               <span className="font-medium text-emerald-600">
                 {isGroup ? `${typingNames.join("، ")} در حال نوشتن…` : "در حال نوشتن…"}
@@ -1774,7 +1764,7 @@ export default function ChatWindow() {
           <div className="mx-auto mb-2 flex max-w-3xl items-start gap-2 rounded-xl border-r-2 border-emerald-500 bg-emerald-50 px-3 py-2">
             <div className="min-w-0 flex-1">
               <div className="text-xs font-bold text-emerald-700">
-                پاسخ به {replyTo.sender?.username ?? "کاربر"}
+                پاسخ به {replyTo.sender?.display_name || replyTo.sender?.username || "کاربر"}
               </div>
               <div className="truncate text-xs text-slate-500">{replyTo.text}</div>
             </div>

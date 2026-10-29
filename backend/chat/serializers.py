@@ -6,6 +6,7 @@ from .models import Message
 class UserBriefSerializer(serializers.Serializer):
     id = serializers.IntegerField(read_only=True)
     username = serializers.CharField(read_only=True)
+    display_name = serializers.CharField(read_only=True)  # نام نمایشی — خالی = همان username
 
 
 class ReplyBriefSerializer(serializers.Serializer):
@@ -13,6 +14,7 @@ class ReplyBriefSerializer(serializers.Serializer):
     text = serializers.CharField(read_only=True)
     sender_id = serializers.IntegerField(read_only=True)
     sender_username = serializers.CharField(read_only=True, source="sender.username")
+    sender_display_name = serializers.CharField(read_only=True, source="sender.display_name")
 
 
 class CallBriefSerializer(serializers.Serializer):
