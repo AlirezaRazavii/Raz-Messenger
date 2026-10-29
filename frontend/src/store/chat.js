@@ -63,25 +63,29 @@ function previewOf(m) {
   return "";
 }
 
-// صدا + (اگر تب در پس‌زمینه است) اعلان مرورگر — کلیک روی اعلان همان گفتگو را باز می‌کند
-function notifyIncoming(m, convId) {
+// صدا + (وقتی کاربر پشت اپ نیست) اعلان مرورگر — کلیک روی اعلان همان گفتگو را باز می‌کند
+// away یعنی کاربر پشت اپ نیست: تب مخفی است «یا» فوکوسِ پنجره جای دیگری است
+// (دو پنجره‌ی کنار هم: پنجره‌ی مرئیِ بی‌فوکوس هم away حساب می‌شود)
+function notifyIncoming(m, convId, isActive) {
+  const away = document.hidden || !document.hasFocus();
+  if (isActive && !away) return; // گفتگوی باز را همان لحظه می‌بیند — بی‌خبر نکن
   playDing();
-  if (document.hidden && "Notification" in window && Notification.permission === "granted") {
-    try {
-      const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
-      const title = conv?.group?.name || conv?.other_user?.username || "گفتگوی جدید";
-      const sender = m.sender?.username && conv?.group ? `${m.sender.username}: ` : "";
-      const n = new Notification(`${title} — پیام جدید`, {
-        body: sender + previewOf(m),
-        tag: `raz-msg-${convId}`, // پیام‌های پشت‌سرهمِ یک گفتگو جایگزین قبلی می‌شوند
-      });
-      n.onclick = () => {
-        window.focus();
-        useChatStore.getState().setActive(convId);
-        try { n.close(); } catch {}
-      };
-    } catch {}
-  }
+  if (!away) return; // کاربر در اپ است؛ بج سایدبار را می‌بیند — پاپ‌آپ نمی‌خواهد
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
+    const title = conv?.group?.name || conv?.other_user?.username || "گفتگوی جدید";
+    const sender = m.sender?.username && conv?.group ? `${m.sender.username}: ` : "";
+    const n = new Notification(`${title} — پیام جدید`, {
+      body: sender + previewOf(m),
+      tag: `raz-msg-${convId}`, // پیام‌های پشت‌سرهمِ یک گفتگو جایگزین قبلی می‌شوند
+    });
+    n.onclick = () => {
+      window.focus();
+      useChatStore.getState().setActive(convId);
+      try { n.close(); } catch {}
+    };
+  } catch {}
 }
 
 function myId() {
@@ -263,10 +267,11 @@ const useChatStore = create((set, get) => ({
     if (!convExists) get().loadConversations();
     if (isActive && !mine) get().markRead(convId, m.id);
 
-    // اعلان فقط برای پیامِ دیگران در گفتگویِ غیرفعال؛ وسط تماسِ زنده صدا/اعلان ندهیم
-    if (!mine && !isActive) {
+    // اعلان پیامِ دیگران — وسط تماسِ زنده صدا/اعلان ندهیم؛
+    // گفتگوی باز هم وقتی کاربر پشت اپ نیست خبر می‌شود
+    if (!mine) {
       const cs = useCallStore.getState().status;
-      if (cs === "idle" || cs === "ended") notifyIncoming(m, convId);
+      if (cs === "idle" || cs === "ended") notifyIncoming(m, convId, isActive);
     }
   },
 

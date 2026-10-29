@@ -499,7 +499,7 @@ function NotifyBell() {
       className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl transition-colors ${
         perm === "denied"
           ? "bg-red-50 text-red-500 hover:bg-red-100"
-          : "bg-amber-50 text-amber-500 hover:bg-amber-100"
+          : "animate-pulse bg-amber-50 text-amber-500 hover:bg-amber-100"
       }`}
     >
       {perm === "denied" ? <BellOff className="h-5 w-5" /> : <BellRing className="h-5 w-5" />}
