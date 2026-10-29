@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { BellOff, BellRing, Check, History, PhoneIncoming, PhoneOutgoing, Plus, Search, UserPlus, Users, X } from "lucide-react";
+import { BellOff, BellRing, Check, History, PhoneIncoming, PhoneOutgoing, Plus, Search, Settings, UserPlus, Users, X } from "lucide-react";
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
 import { apiListCalls, extractError } from "../../api/chat";
 import Avatar, { nameOf } from "./Avatar";
+import SettingsDialog from "./SettingsDialog";
 
 function initial(name) {
   return (name || "؟").trim().charAt(0).toUpperCase();
@@ -523,7 +524,8 @@ export default function Sidebar() {
   const [filter, setFilter] = useState("");
   const [chatDialogOpen, setChatDialogOpen] = useState(false);
   const [groupDialogOpen, setGroupDialogOpen] = useState(false);
-  const [callsOpen, setCallsOpen] = useState(false);
+    const [callsOpen, setCallsOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const list = useMemo(() => {
     const f = filter.trim().toLowerCase();
@@ -543,6 +545,13 @@ export default function Sidebar() {
             className="w-full rounded-xl bg-slate-100 py-2 pl-3 pr-9 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40"
           />
         </div>
+                <button
+          onClick={() => setSettingsOpen(true)}
+          title="تنظیمات"
+          className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-slate-100 text-slate-500 transition-colors hover:bg-slate-200"
+        >
+          <Settings className="h-5 w-5" />
+        </button>
         <NotifyBell />
         <button
           onClick={() => setCallsOpen(true)}
@@ -606,7 +615,8 @@ export default function Sidebar() {
 
       {chatDialogOpen && <NewChatDialog onClose={() => setChatDialogOpen(false)} />}
       {groupDialogOpen && <NewGroupDialog onClose={() => setGroupDialogOpen(false)} />}
-      {callsOpen && <CallsPanel onClose={() => setCallsOpen(false)} />}
+            {callsOpen && <CallsPanel onClose={() => setCallsOpen(false)} />}
+      {settingsOpen && <SettingsDialog onClose={() => setSettingsOpen(false)} />}
     </div>
   );
 }
