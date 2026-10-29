@@ -38,7 +38,7 @@ export default function HomePage() {
             <MessageCircle className="h-5 w-5" />
           </span>
           <div className="leading-tight">
-            <div className="font-extrabold text-slate-800">RAZ</div>
+            <div className="font-extrabold text-slate-800">RAZLI</div>
             <div className="text-[11px] text-slate-400">پیام‌رسان امن شما</div>
           </div>
         </div>

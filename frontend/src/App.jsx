@@ -6,7 +6,6 @@ import HomePage from './pages/HomePage'
 import LoginPage from './pages/LoginPage'
 import RegisterPage from './pages/RegisterPage'
 import ResetPasswordPage from './pages/ResetPasswordPage'
-import SettingsPage from './pages/SettingsPage'
 
 export default function App() {
   return (
@@ -17,7 +16,6 @@ export default function App() {
       <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route element={<ProtectedLayout />}>
         <Route path="/" element={<HomePage />} />
-        <Route path="/settings" element={<SettingsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

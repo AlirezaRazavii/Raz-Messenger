@@ -35,6 +35,16 @@ export async function apiListMessages(conversationId, { before, limit } = {}) {
   return unwrap(api.get(`/chat/conversations/${conversationId}/messages/${query}`));
 }
 
+// ---------- جستجو در پیام‌ها (بستهٔ ۳) ----------
+
+// جستجوی متن پیام‌های یک گفتگو — حداقل ۲ نویسه؛ صفحه‌بندی با before
+export async function apiSearchMessages(conversationId, { q, before, limit } = {}) {
+  const params = [`q=${encodeURIComponent(q)}`];
+  if (before) params.push(`before=${before}`);
+  if (limit) params.push(`limit=${limit}`);
+  return unwrap(api.get(`/chat/conversations/${conversationId}/messages/search/?${params.join("&")}`));
+}
+
 export async function apiSendMessage(conversationId, text, replyToId = null) {
   const body = { text };
   if (replyToId) body.reply_to = replyToId;

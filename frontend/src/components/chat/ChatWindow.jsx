@@ -3,7 +3,7 @@ import {
   ArrowRight, Check, CheckCheck, ChevronDown, Copy, Crown, Download, File as FileIcon, Forward,
   Image as ImageIcon, ListChecks, Loader2, LogOut, Mic, MoreHorizontal, Paperclip, Pencil, Phone, PhoneCall,
   PhoneIncoming, PhoneMissed, PhoneOutgoing, Play,
-  Reply, SendHorizonal, Trash2, Users, UserPlus, Video, X,
+  Reply, Search, SendHorizonal, Trash2, Users, UserPlus, Video, X,
 } from "lucide-react";
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
@@ -11,6 +11,7 @@ import { extractError, apiDownloadAttachment } from "../../api/chat";
 import useCallStore from "../../store/call";
 import Avatar, { nameOf } from "./Avatar";
 import ProfileCard from "./ProfileCard";
+import SearchPanel from "./SearchPanel";
 
 const EMPTY_BUCKET = { list: [], hasMore: false, loading: false };
 const MAX_UPLOAD_MB = 25;
@@ -735,6 +736,7 @@ export default function ChatWindow() {
   const [lightbox, setLightbox] = useState(null);
   const [membersOpen, setMembersOpen] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false); // پنل جستجوی پیام‌ها (بستهٔ ۳)
   const [recording, setRecording] = useState(false);
   const [recSecs, setRecSecs] = useState(0);
   const [tick, setTick] = useState(0);
@@ -864,6 +866,7 @@ export default function ChatWindow() {
     setForwarding(null);
     setError("");
     setMembersOpen(false);
+    setSearchOpen(false); // جستجوی گفتگوی قبلی بسته شود
     if (pending?.url) URL.revokeObjectURL(pending.url);
     setPending(null);
     cancelVoiceRecording(); // ضبط نیمه‌تمام هنگام تغییر گفتگو دور ریخته می‌شود
@@ -1365,6 +1368,13 @@ export default function ChatWindow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jumpTo, bucket.list.length, bucket.loading]);
 
+  // نتیجهٔ جستجو: پنل بسته شود و به خود پیام پرش کنیم
+  // (اگر پیام قدیمی‌تر از تاریخچهٔ لودشده باشد، jumpToMessage صفحه‌ها را می‌آورد)
+  const jumpToSearchResult = (mid) => {
+    setSearchOpen(false);
+    jumpToMessage(mid);
+  };
+
   const renderBubble = (m) => {
     const mine = senderId(m) === myId;
     // ردیف سیستمی تماس — حباب ندارد؛ وسط چت نشان داده می‌شود
@@ -1633,6 +1643,22 @@ export default function ChatWindow() {
           </div>
         </div>
 
+        {/* جستجو در پیام‌های همین گفتگو — بستهٔ ۳ */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setSearchOpen((v) => !v);
+          }}
+          className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl transition-colors ${
+            searchOpen
+              ? "bg-emerald-50 text-emerald-600"
+              : "text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+          }`}
+          title="جستجو در پیام‌ها"
+        >
+          <Search className="h-5 w-5" />
+        </button>
+
         {!isGroup && (
           <div className="flex shrink-0 items-center gap-1">
             <button
@@ -1716,6 +1742,15 @@ export default function ChatWindow() {
             </span>
           )}
         </button>
+
+        {/* پنل جستجو — روی ناحیهٔ پیام‌ها از سمت چپ باز می‌شود */}
+        {searchOpen && (
+          <SearchPanel
+            convId={activeId}
+            onClose={() => setSearchOpen(false)}
+            onJump={jumpToSearchResult}
+          />
+        )}
       </div>
 
       {/* جعبه نوشتن */}

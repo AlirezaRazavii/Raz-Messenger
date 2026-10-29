@@ -21,6 +21,7 @@ User = get_user_model()
 TEXT_MAX_LENGTH = 4096
 HISTORY_PAGE_DEFAULT = 30
 HISTORY_PAGE_MAX = 50
+SEARCH_PAGE_DEFAULT = 20  # بستهٔ ۳ — جستجو در پیام‌ها
 ATTACHMENT_KINDS = {"image", "file", "voice"}
 GROUP_NAME_MAX = 128
 GROUP_MAX_MEMBERS = 200
@@ -697,6 +698,48 @@ class MessageListCreateView(APIView):
             {"type": "message.new", "message": MessageSerializer(msg).data},
         )
         return Response(MessageSerializer(msg).data, status=201)
+
+
+class MessageSearchView(APIView):
+    """جستجوی متن پیام‌ها در یک گفتگو (بستهٔ ۳).
+
+    فقط پیام‌های متنی همین گفتگو؛ ردیف‌های سیستمی تماس و پیام‌های
+    حذف‌شدهٔ «برای من» جستجو نمی‌شوند. صفحه‌بندی مثل تاریخچه با before=<id>.
+    """
+
+    def get(self, request, conv_id):
+        conv = _get_my_conversation(request.user, conv_id)
+        if conv is None:
+            return Response({"detail": "گفتگو پیدا نشد."}, status=404)
+
+        q = (request.query_params.get("q") or "").strip()
+        if len(q) < 2:
+            return Response({"results": [], "has_more": False})
+
+        try:
+            before = int(request.query_params.get("before") or 0)
+        except (TypeError, ValueError):
+            before = 0
+        try:
+            limit = int(request.query_params.get("limit") or SEARCH_PAGE_DEFAULT)
+        except (TypeError, ValueError):
+            limit = SEARCH_PAGE_DEFAULT
+        limit = max(1, min(limit, HISTORY_PAGE_MAX))
+
+        qs = (
+            Message.objects.filter(conversation=conv, kind="text", text__icontains=q)
+            .exclude(deleted_for=request.user)
+            .select_related("sender", "reply_to", "reply_to__sender")
+        )
+        if before > 0:
+            qs = qs.filter(id__lt=before)
+        msgs = list(qs.order_by("-id")[: limit + 1])
+        has_more = len(msgs) > limit
+        msgs = msgs[:limit]
+
+        return Response(
+            {"results": MessageSerializer(msgs, many=True).data, "has_more": has_more}
+        )
 
 
 class MessageDetailView(APIView):

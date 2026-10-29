@@ -19,6 +19,12 @@ urlpatterns = [
         views.MessageBulkDeleteView.as_view(),
         name="message-bulk-delete",
     ),
+    # بستهٔ ۳ — جستجو در پیام‌های همین گفتگو
+    path(
+        "conversations/<int:conv_id>/messages/search/",
+        views.MessageSearchView.as_view(),
+        name="message-search",
+    ),
     path(
         "messages/<int:msg_id>/forward/",
         views.MessageForwardView.as_view(),
