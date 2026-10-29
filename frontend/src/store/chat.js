@@ -24,6 +24,66 @@ import useCallStore from "./call";
 const TYPING_TTL = 4000;
 const lastSelfTyping = {}; // محافظ اکو: آخرین باری که خودم رویداد typing فرستادم
 
+// ---------------- اعلان پیام جدید (بسته اعلان‌ها) ----------------
+// صدای کوتاه «دینگ» با Web Audio — بدون هیچ فایل صوتی در ریپو
+let notifAudioCtx = null;
+function playDing() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    if (!notifAudioCtx) notifAudioCtx = new AC();
+    if (notifAudioCtx.state === "suspended") notifAudioCtx.resume().catch(() => {});
+    const t = notifAudioCtx.currentTime;
+    // دو نتِ کوتاه پشت‌سرهم — مثل زنگ پیام‌رسان‌ها
+    for (const [freq, at, dur] of [[1318.5, 0, 0.09], [1760, 0.09, 0.16]]) {
+      const osc = notifAudioCtx.createOscillator();
+      const gain = notifAudioCtx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      osc.connect(gain);
+      gain.connect(notifAudioCtx.destination);
+      gain.gain.setValueAtTime(0.0001, t + at);
+      gain.gain.exponentialRampToValueAtTime(0.08, t + at + 0.02);
+      gain.gain.setValueAtTime(0.08, t + at + dur - 0.04);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + at + dur);
+      osc.start(t + at);
+      osc.stop(t + at + dur + 0.05);
+    }
+  } catch {}
+}
+
+// پیش‌نمایش پیام در اعلان — هم‌ارزِ همان چیزی که سایدبار نشان می‌دهد
+function previewOf(m) {
+  if (!m) return "";
+  if (m.kind === "call") return m.call?.call_type === "video" ? "تماس تصویری" : "تماس صوتی";
+  if (m.text) return m.text;
+  if (m.attachment_kind === "image") return "📷 تصویر";
+  if (m.attachment_kind === "voice") return "🎤 پیام صوتی";
+  if (m.attachment_kind === "file") return "📎 فایل";
+  return "";
+}
+
+// صدا + (اگر تب در پس‌زمینه است) اعلان مرورگر — کلیک روی اعلان همان گفتگو را باز می‌کند
+function notifyIncoming(m, convId) {
+  playDing();
+  if (document.hidden && "Notification" in window && Notification.permission === "granted") {
+    try {
+      const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
+      const title = conv?.group?.name || conv?.other_user?.username || "گفتگوی جدید";
+      const sender = m.sender?.username && conv?.group ? `${m.sender.username}: ` : "";
+      const n = new Notification(`${title} — پیام جدید`, {
+        body: sender + previewOf(m),
+        tag: `raz-msg-${convId}`, // پیام‌های پشت‌سرهمِ یک گفتگو جایگزین قبلی می‌شوند
+      });
+      n.onclick = () => {
+        window.focus();
+        useChatStore.getState().setActive(convId);
+        try { n.close(); } catch {}
+      };
+    } catch {}
+  }
+}
+
 function myId() {
   const s = useAuthStore.getState() || {};
   const u = s.user || {};
@@ -202,6 +262,12 @@ const useChatStore = create((set, get) => ({
 
     if (!convExists) get().loadConversations();
     if (isActive && !mine) get().markRead(convId, m.id);
+
+    // اعلان فقط برای پیامِ دیگران در گفتگویِ غیرفعال؛ وسط تماسِ زنده صدا/اعلان ندهیم
+    if (!mine && !isActive) {
+      const cs = useCallStore.getState().status;
+      if (cs === "idle" || cs === "ended") notifyIncoming(m, convId);
+    }
   },
 
   _applyMessageEdited: (m, hint) => {
@@ -557,3 +623,14 @@ const useChatStore = create((set, get) => ({
 }));
 
 export default useChatStore;
+
+// بج خوانده‌نشده‌ها در عنوان تب — «(۳) پیام‌رسان»؛ با هر تغییرِ لیست گفتگوها تازه می‌شود
+let lastBadgeConvs = null;
+useChatStore.subscribe((s) => {
+  if (s.conversations === lastBadgeConvs) return;
+  lastBadgeConvs = s.conversations;
+  const total = s.conversations.reduce((n, c) => n + (c.unread_count ?? 0), 0);
+  document.title = total > 0
+    ? `(${total > 99 ? "۹۹+" : total.toLocaleString("fa-IR")}) پیام‌رسان`
+    : "پیام‌رسان";
+});

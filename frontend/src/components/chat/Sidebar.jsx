@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, History, PhoneIncoming, PhoneOutgoing, Plus, Search, UserPlus, Users, X } from "lucide-react";
+import { BellOff, BellRing, Check, History, PhoneIncoming, PhoneOutgoing, Plus, Search, UserPlus, Users, X } from "lucide-react";
 import useChatStore from "../../store/chat";
 import { useAuthStore } from "../../store/auth";
 import { apiListCalls, extractError } from "../../api/chat";
@@ -464,6 +464,49 @@ function CallsPanel({ onClose }) {
   );
 }
 
+// زنگولهٔ فعال‌سازی اعلان‌ها — فقط وقتی مجوز هنوز گرفته نشده دیده می‌شود
+function NotifyBell() {
+  const [perm, setPerm] = useState(
+    typeof Notification !== "undefined" ? Notification.permission : "unsupported"
+  );
+
+  if (perm === "granted" || perm === "unsupported") return null;
+
+  const enable = async () => {
+    if (perm === "denied") {
+      window.alert(
+        "مجوز اعلان قبلاً رد شده است. از تنظیمات سایت در مرورگر (آیکون قفل کنار نوار آدرس) اجازهٔ نمایش اعلان بده."
+      );
+      return;
+    }
+    try {
+      const p = await Notification.requestPermission();
+      setPerm(p);
+      if (p === "granted") {
+        try {
+          new Notification("اعلان‌های راز فعال شد", {
+            body: "از این پس پیام‌های جدید را همین‌جا خبر می‌دهیم.",
+          });
+        } catch {}
+      }
+    } catch {}
+  };
+
+  return (
+    <button
+      onClick={enable}
+      title={perm === "denied" ? "اعلان‌ها رد شده‌اند — از تنظیمات مرورگر اجازه بده" : "فعال‌سازی اعلان پیام‌ها"}
+      className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl transition-colors ${
+        perm === "denied"
+          ? "bg-red-50 text-red-500 hover:bg-red-100"
+          : "bg-amber-50 text-amber-500 hover:bg-amber-100"
+      }`}
+    >
+      {perm === "denied" ? <BellOff className="h-5 w-5" /> : <BellRing className="h-5 w-5" />}
+    </button>
+  );
+}
+
 export default function Sidebar() {
   const conversations = useChatStore((s) => s.conversations);
   const activeId = useChatStore((s) => s.activeId);
@@ -493,6 +536,7 @@ export default function Sidebar() {
             className="w-full rounded-xl bg-slate-100 py-2 pl-3 pr-9 text-sm outline-none focus:ring-2 focus:ring-emerald-500/40"
           />
         </div>
+        <NotifyBell />
         <button
           onClick={() => setCallsOpen(true)}
           title="تماس‌های اخیر"
