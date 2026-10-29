@@ -55,3 +55,18 @@ body {
     background-color: transparent;
   }
 }
+
+/* پاپ‌آپ اعلان داخل اپ — ورود نرم از پایین */
+.animate-toast-in {
+  animation: toast-in 0.22s ease-out;
+}
+@keyframes toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

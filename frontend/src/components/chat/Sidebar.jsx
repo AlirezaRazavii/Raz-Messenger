@@ -464,18 +464,27 @@ function CallsPanel({ onClose }) {
   );
 }
 
-// زنگولهٔ فعال‌سازی اعلان‌ها — فقط وقتی مجوز هنوز گرفته نشده دیده می‌شود
+// زنگولهٔ اعلان سیستمی مرورگر — پاپ‌آپ داخل اپ همیشه فعال است؛
+// این فقط اعلان سطح سیستمعامل (وقتی تب در پس‌زمینه است) را روشن می‌کند
 function NotifyBell() {
   const [perm, setPerm] = useState(
     typeof Notification !== "undefined" ? Notification.permission : "unsupported"
   );
 
-  if (perm === "granted" || perm === "unsupported") return null;
+  if (perm === "granted") return null;
 
   const enable = async () => {
+    if (perm === "unsupported") {
+      window.alert(
+        "این آدرس اجازهٔ اعلان سیستمی نمی‌دهد (Notification فقط روی HTTPS یا localhost کار می‌کند).\n" +
+          "پاپ‌آپ داخل خود اپ همین حالا هم فعال است؛ برای اعلان سیستمی با آدرس localhost وارد شو."
+      );
+      return;
+    }
     if (perm === "denied") {
       window.alert(
-        "مجوز اعلان قبلاً رد شده است. از تنظیمات سایت در مرورگر (آیکون قفل کنار نوار آدرس) اجازهٔ نمایش اعلان بده."
+        "مجوز اعلان قبلاً رد شده است. از تنظیمات سایت در مرورگر (آیکون قفل/تنظیمات کنار نوار آدرس) اجازهٔ نمایش اعلان بده.\n" +
+          "پاپ‌آپ داخل خود اپ همیشه فعال است و به این مجوز نیازی ندارد."
       );
       return;
     }
@@ -485,21 +494,32 @@ function NotifyBell() {
       if (p === "granted") {
         try {
           new Notification("اعلان‌های راز فعال شد", {
-            body: "از این پس پیام‌های جدید را همین‌جا خبر می‌دهیم.",
+            body: "از این پس پیام‌های جدید را حتی وقتی تب در پس‌زمینه است خبر می‌دهیم.",
+            dir: "rtl",
+            lang: "fa",
           });
         } catch {}
       }
     } catch {}
   };
 
+  const title =
+    perm === "unsupported"
+      ? "اعلان سیستمی در این آدرس ممکن نیست — با localhost یا HTTPS وارد شو"
+      : perm === "denied"
+        ? "اعلان سیستمی رد شده — از تنظیمات مرورگر اجازه بده"
+        : "فعال‌سازی اعلان سیستمی (برای وقتی تب در پس‌زمینه است)";
+
   return (
     <button
       onClick={enable}
-      title={perm === "denied" ? "اعلان‌ها رد شده‌اند — از تنظیمات مرورگر اجازه بده" : "فعال‌سازی اعلان پیام‌ها"}
+      title={title}
       className={`grid h-10 w-10 shrink-0 place-items-center rounded-xl transition-colors ${
         perm === "denied"
           ? "bg-red-50 text-red-500 hover:bg-red-100"
-          : "animate-pulse bg-amber-50 text-amber-500 hover:bg-amber-100"
+          : perm === "unsupported"
+            ? "bg-slate-100 text-slate-400 hover:bg-slate-200"
+            : "animate-pulse bg-amber-50 text-amber-500 hover:bg-amber-100"
       }`}
     >
       {perm === "denied" ? <BellOff className="h-5 w-5" /> : <BellRing className="h-5 w-5" />}

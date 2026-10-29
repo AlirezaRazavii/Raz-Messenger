@@ -4,6 +4,7 @@ import useChatStore from "../store/chat";
 import useChatSocket from "../hooks/useChatSocket";
 import Sidebar from "../components/chat/Sidebar";
 import ChatWindow from "../components/chat/ChatWindow";
+import NotifyToasts from "../components/chat/NotifyToasts";
 
 function EmptyState() {
   return (
@@ -66,6 +67,9 @@ export default function HomePage() {
           {activeId ? <ChatWindow /> : <EmptyState />}
         </main>
       </div>
+
+      {/* پاپ‌آپ اعلان پیام‌های تازه — روی همهٔ لایه‌ها */}
+      <NotifyToasts />
     </div>
   );
 }

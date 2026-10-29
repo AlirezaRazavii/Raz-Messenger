@@ -20,6 +20,7 @@ import {
   extractError,
 } from "../api/chat";
 import useCallStore from "./call";
+import { useNotifyStore } from "./notify";
 
 const TYPING_TTL = 4000;
 const lastSelfTyping = {}; // محافظ اکو: آخرین باری که خودم رویداد typing فرستادم
@@ -63,22 +64,33 @@ function previewOf(m) {
   return "";
 }
 
-// صدا + (وقتی کاربر پشت اپ نیست) اعلان مرورگر — کلیک روی اعلان همان گفتگو را باز می‌کند
+// صدا + پاپ‌آپ داخل اپ + (وقتی مجوز باشد) اعلان سیستمی مرورگر
 // away یعنی کاربر پشت اپ نیست: تب مخفی است «یا» فوکوسِ پنجره جای دیگری است
 // (دو پنجره‌ی کنار هم: پنجره‌ی مرئیِ بی‌فوکوس هم away حساب می‌شود)
 function notifyIncoming(m, convId, isActive) {
   const away = document.hidden || !document.hasFocus();
   if (isActive && !away) return; // گفتگوی باز را همان لحظه می‌بیند — بی‌خبر نکن
   playDing();
-  if (!away) return; // کاربر در اپ است؛ بج سایدبار را می‌بیند — پاپ‌آپ نمی‌خواهد
+
+  const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
+  const title = conv?.group?.name || conv?.other_user?.username || "گفتگوی جدید";
+  const sender = m.sender?.username && conv?.group ? `${m.sender.username}: ` : "";
+  const body = sender + previewOf(m);
+
+  // پاپ‌آپ داخل خود اپ — به مجوز مرورگر و آدرس HTTPS/localhost نیازی ندارد؛
+  // در پنجرهٔ ناشناس و آدرس IP لان هم مثل همیشه دیده می‌شود
+  useNotifyStore.getState().push(convId, title, body);
+
+  // اعلان سیستمی مرورگر فقط وقتی کاربر پشت اپ نیست و مرورگر مجوز داده؛
+  // اگر این شرط برقرار نبود هم مشکلی نیست — toast بالا همیشه دیده می‌شود
+  if (!away) return;
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   try {
-    const conv = useChatStore.getState().conversations.find((c) => c.id === convId);
-    const title = conv?.group?.name || conv?.other_user?.username || "گفتگوی جدید";
-    const sender = m.sender?.username && conv?.group ? `${m.sender.username}: ` : "";
     const n = new Notification(`${title} — پیام جدید`, {
-      body: sender + previewOf(m),
+      body,
       tag: `raz-msg-${convId}`, // پیام‌های پشت‌سرهمِ یک گفتگو جایگزین قبلی می‌شوند
+      dir: "rtl",
+      lang: "fa",
     });
     n.onclick = () => {
       window.focus();
