@@ -56,7 +56,7 @@ client.interceptors.response.use(
 )
 
 // دامنهٔ بک‌اند — برای لینک‌هایی که خارج از axios هستند (مثل <img>)
-export const backendOrigin = API_ORIGIN`
+export const backendOrigin = API_ORIGIN
 
 // تبدیل مسیر نسبی API (مثل /api/auth/users/1/avatar/) به URL کامل
 export function absUrl(path) {
