@@ -2,9 +2,11 @@ import axios from 'axios'
 
 import { useAuthStore } from '../store/auth'
 
-// در حالت توسعه بک‌اند روی 8000 است؛ در فاز ۷ با هم‌دامنه شدن، به '/api' تغییر می‌کند
+import { API_ORIGIN } from './origin'
+
+// توسعه: http(s)://hostname:8000 — پروداکشن: هم‌دامنه (خالی) — جزئیات در api/origin.js
 const client = axios.create({
-  baseURL: `${window.location.protocol}//${window.location.hostname}:8000/api`,
+  baseURL: `${API_ORIGIN}/api`,
   timeout: 15000,
 })
 
@@ -53,8 +55,8 @@ client.interceptors.response.use(
   }
 )
 
-// دامنهٔ بک‌اند به‌صورت مطلق — برای لینک‌هایی که خارج از axios هستند (مثل <img>)
-export const backendOrigin = `${window.location.protocol}//${window.location.hostname}:8000`
+// دامنهٔ بک‌اند — برای لینک‌هایی که خارج از axios هستند (مثل <img>)
+export const backendOrigin = API_ORIGIN`
 
 // تبدیل مسیر نسبی API (مثل /api/auth/users/1/avatar/) به URL کامل
 export function absUrl(path) {

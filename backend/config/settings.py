@@ -144,6 +144,18 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# --- استاتیک پروداکشن (فاز ۵ — nginx از این مسیر سرو می‌کند) ---
+STATIC_ROOT = os.path.join(BASE_DIR, "staticfiles")
+
+# --- پروداکشن پشت nginx: مبدأهای مجاز CSRF (لاگین پنل ادمین) ---
+CSRF_TRUSTED_ORIGINS = os.environ.get(
+    "CSRF_TRUSTED_ORIGINS",
+    "https://razli.ir,https://www.razli.ir,http://razli.ir,http://www.razli.ir",
+).split(",")
+
+# --- پروداکشن پشت nginx: تشخیص https از هدر پروکسی ---
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 

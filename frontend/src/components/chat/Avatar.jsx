@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Users } from "lucide-react";
 
-// دامنهٔ بک‌اند — همان قاعدهٔ client.js؛ برای <img> که هدر JWT ندارد
-const BACKEND = `${window.location.protocol}//${window.location.hostname}:8000`;
+// دامنهٔ بک‌اند — همان قاعدهٔ client.js (api/origin.js)؛ برای <img> که هدر JWT ندارد
+import { API_ORIGIN as BACKEND } from "../../api/origin";
 export function absUrl(path) {
   if (!path) return null;
   return path.startsWith("http") ? path : BACKEND + path;

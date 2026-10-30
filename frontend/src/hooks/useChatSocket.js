@@ -2,11 +2,11 @@ import { useEffect } from "react";
 import { useAuthStore } from "../store/auth";
 import useChatStore from "../store/chat";
 
-// آدرس‌ها از hostname مرورگر ساخته می‌شوند تا روی PC (localhost) و موبایل (IP شبکه) هر دو کار کنند؛
-// در فاز ۷ (استقرار) به متغیر محیطی منتقل می‌شوند
-const HOST = window.location.hostname;
-const WS_URL = `ws://${HOST}:8000/ws/`;
-const API_BASE = `http://${HOST}:8000`;
+// توسعه: بک‌اند روی پورت 8000 همین hostname — پروداکشن: هم‌دامنه (جزئیات در api/origin.js)
+import { API_ORIGIN, wsUrl } from "../api/origin";
+
+const WS_URL = wsUrl();
+const API_BASE = API_ORIGIN;
 const PING_INTERVAL = 30000;
 const MAX_BACKOFF = 15000;
 
